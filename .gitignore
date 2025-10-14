@@ -4,3 +4,4 @@ node_modules/
 webui/dist/
 __pycache__/
 *.pyc
+scraper.log

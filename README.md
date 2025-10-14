@@ -65,13 +65,22 @@ node scraper.js --listCourses
 
 Das React/Tailwind-Dashboard ist nun direkt mit dem Node.js-Scraper verdrahtet. Eine schlanke Python-Bridge (nur Standardbibliothek) startet den CLI-Prozess, streamt die Konsolen-Logs via Server-Sent Events und stellt REST-Endpunkte für Kurs- und Statusabfragen bereit.
 
-1. Starte das Control Center (hostet API & Weboberfläche zugleich):
+1. Starte das Control Center (hostet API & Weboberfläche zugleich) bequem über den Scraper:
+
+   ```sh
+   node scraper.js --startServer
+   ```
+
+   - Mit `--serverPort` und `--serverHost` kannst du Port bzw. Host überschreiben.
+   - Über `--no-openDashboard` verhinderst du das automatische Öffnen des Browsers.
+
+2. Alternativ kannst du die Bridge weiterhin direkt via Python starten:
 
    ```sh
    python server.py
    ```
 
-2. Öffne [http://localhost:8000](http://localhost:8000). Wähle dort einen Kurs aus, passe die Download-Optionen an und starte die Synchronisation. Der „Live-Protokoll“-Stream zeigt alle Meldungen des Node-Scrapers in Echtzeit an.
+3. Öffne [http://localhost:8000](http://localhost:8000). Wähle dort einen Kurs aus, passe die Download-Optionen an und starte die Synchronisation. Der „Live-Protokoll“-Stream zeigt alle Meldungen des Node-Scrapers in Echtzeit an.
 
 > Hinweis: `/api/courses` ruft die Kursliste standardmäßig direkt über `node scraper.js --listCourses` ab. Falls der Live-Abruf fehlschlägt, kannst du eine eigene JSON-Datei über die Umgebungsvariable `COURSES_FILE` hinterlegen oder eine Einzel-URL via `COURSE_URL` bereitstellen.
 
