@@ -23,8 +23,12 @@ async function log(message, context = {}, driver = null) {
     const timestamp = new Date().toISOString();
     const logParts = [`${timestamp}`];
 
+    const silent = process.env.MCD_SILENT_LOGS === '1';
+
     // Debug: Zeige den Kontext
-    console.log('Received context:', context);
+    if (!silent) {
+        console.log('Received context:', context);
+    }
 
     if (context.fileName) {
         logParts.push(`[File: ${context.fileName}]`);
@@ -64,7 +68,9 @@ async function log(message, context = {}, driver = null) {
     const logMessage = logParts.join(' ') + '\n';
 
     fs.appendFileSync(logFile, logMessage);
-    console.log(logMessage);
+    if (!silent) {
+        console.log(logMessage);
+    }
 }
 
 
