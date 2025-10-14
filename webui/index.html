@@ -1,0 +1,822 @@
+<!doctype html>
+<html lang="de" class="scroll-smooth">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Moodle Course Downloader</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      :root {
+        color-scheme: dark;
+      }
+
+      body {
+        font-family: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      }
+
+      .bg-mesh-gradient {
+        background-image: radial-gradient(circle at 20% 20%, rgba(91, 141, 239, 0.2), transparent 45%),
+          radial-gradient(circle at 80% 10%, rgba(56, 189, 248, 0.15), transparent 40%),
+          radial-gradient(circle at 0% 80%, rgba(34, 197, 94, 0.12), transparent 40%),
+          radial-gradient(circle at 80% 80%, rgba(168, 85, 247, 0.12), transparent 40%),
+          linear-gradient(160deg, rgba(15, 23, 42, 0.95), rgba(2, 6, 23, 0.95));
+        background-blend-mode: screen;
+      }
+
+      .no-scrollbar::-webkit-scrollbar {
+        display: none;
+      }
+
+      .no-scrollbar {
+        -ms-overflow-style: none;
+        scrollbar-width: none;
+      }
+    </style>
+    <script>
+      window.tailwind = window.tailwind ?? {};
+      window.tailwind.config = {
+        theme: {
+          extend: {
+            colors: {
+              brand: {
+                100: '#d9e4ff',
+                200: '#b6c9ff',
+                300: '#93aeff',
+                400: '#6d8df6',
+                500: '#5b8def',
+                600: '#4b75d6',
+                700: '#3f63b8',
+              },
+            },
+            boxShadow: {
+              glow: '0 20px 60px rgba(91, 141, 239, 0.25)',
+            },
+          },
+        },
+      };
+    </script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  </head>
+  <body class="bg-slate-950 text-slate-100">
+    <div id="root"></div>
+    <script type="text/babel">
+      const { useEffect, useMemo, useRef, useState } = React;
+
+      const COURSES = [
+        {
+          id: 'ai101',
+          title: 'AI in Digital Education',
+          description: 'Projektkurs mit praxisnahen Automatisierungen und Prompting-Labs.',
+          modules: 12,
+          completion: 68,
+          lastUpdated: 'Gestern · 18:42',
+          isNew: true,
+        },
+        {
+          id: 'ux201',
+          title: 'UX Research Masterclass',
+          description: 'Wöchentliche Live-Sessions, Templates und Dokumentationen.',
+          modules: 18,
+          completion: 82,
+          lastUpdated: 'Heute · 09:05',
+        },
+        {
+          id: 'code301',
+          title: 'Fullstack Engineering Bootcamp',
+          description: 'Alle Folien, Coding-Challenges und Bonusmaterialien.',
+          modules: 24,
+          completion: 54,
+          lastUpdated: 'Mo · 21:14',
+        },
+        {
+          id: 'pm401',
+          title: 'Agiles Projektmanagement',
+          description: 'Scrum-Playbooks, Checklisten und Retrospektiven.',
+          modules: 15,
+          completion: 91,
+          lastUpdated: 'So · 12:30',
+        },
+      ];
+
+      const DOWNLOAD_OPTIONS = [
+        {
+          id: 'resources',
+          label: 'Ressourcen & Dateien',
+          description: 'PDFs, ZIPs, Office-Dokumente automatisch sichern.',
+          icon: (
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-5 w-5">
+              <path d="M9 2a1 1 0 0 0-1 1v5H5.5a.5.5 0 0 0-.374.832l4.5 5a.5.5 0 0 0 .748 0l4.5-5A.5.5 0 0 0 14.5 8H11V3a1 1 0 0 0-1-1Z" />
+              <path d="M4 13.5a.5.5 0 0 1 .5-.5H7v2H5a1 1 0 0 1-1-1Z" />
+              <path d="M13 15v-2h2.5a.5.5 0 0 1 .5.5 1 1 0 0 1-1 1h-2Z" />
+            </svg>
+          ),
+        },
+        {
+          id: 'videos',
+          label: 'Vorlesungsaufzeichnungen',
+          description: 'Streams herunterladen und in MP4 mit Kapiteln speichern.',
+          icon: (
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="h-5 w-5">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 10.5l-5.25-3v9l5.25-3M21 6.75A2.25 2.25 0 0 0 18.75 4.5h-13.5A2.25 2.25 0 0 0 3 6.75v10.5A2.25 2.25 0 0 0 5.25 19.5h13.5A2.25 2.25 0 0 0 21 17.25V6.75Z" />
+            </svg>
+          ),
+        },
+        {
+          id: 'transcripts',
+          label: 'Transkripte & Zusammenfassungen',
+          description: 'AI generiert Highlights und To-Dos nach dem Download.',
+          icon: (
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-5 w-5">
+              <path d="M3.5 4.75A1.75 1.75 0 0 1 5.25 3h9.5A1.75 1.75 0 0 1 16.5 4.75v10.5A1.75 1.75 0 0 1 14.75 17h-9.5A1.75 1.75 0 0 1 3.5 15.25V4.75ZM6 6.75a.75.75 0 0 0 0 1.5h4a.75.75 0 0 0 0-1.5H6Zm0 3a.75.75 0 0 0 0 1.5h8a.75.75 0 0 0 0-1.5H6Zm0 3a.75.75 0 0 0 0 1.5h5a.75.75 0 0 0 0-1.5H6Z" />
+            </svg>
+          ),
+        },
+        {
+          id: 'structure',
+          label: 'Struktur sichern',
+          description: 'Erstelle lokale Inhaltsverzeichnisse & Metadaten.',
+          icon: (
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="h-5 w-5">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 4.5h15a.75.75 0 0 1 .75.75v13.5a.75.75 0 0 1-.75.75h-15a.75.75 0 0 1-.75-.75V5.25a.75.75 0 0 1 .75-.75Zm3 3h3.75M7.5 12h9M7.5 15h9" />
+            </svg>
+          ),
+        },
+      ];
+
+      const TogglePill = ({ id, label, description, active, onToggle, icon }) => (
+        <button
+          type="button"
+          onClick={() => onToggle(id)}
+          className={`group flex w-full items-start gap-3 rounded-2xl border px-4 py-3 text-left transition ${
+            active
+              ? 'border-brand-500/60 bg-brand-500/20 shadow-[0_14px_30px_rgba(91,141,239,0.25)]'
+              : 'border-white/5 bg-slate-900/50 hover:border-white/15 hover:bg-slate-900/70'
+          }`}
+        >
+          <span
+            className={`mt-1 flex h-9 w-9 items-center justify-center rounded-full border text-brand-200 transition ${
+              active
+                ? 'border-brand-400 bg-brand-500/30'
+                : 'border-white/10 bg-white/5 group-hover:border-brand-400/60'
+            }`}
+          >
+            {icon}
+          </span>
+          <span>
+            <span className="text-sm font-semibold text-white">{label}</span>
+            <p className="text-xs text-slate-300">{description}</p>
+          </span>
+        </button>
+      );
+
+      const CourseSelector = ({ courses, selectedCourseId, onSelectCourse, searchTerm, onSearch }) => {
+        const filteredCourses = courses.filter((course) =>
+          course.title.toLowerCase().includes(searchTerm.toLowerCase())
+        );
+
+        return (
+          <div className="rounded-3xl border border-white/10 bg-white/5 p-6 shadow-xl backdrop-blur">
+            <div className="flex items-center justify-between gap-4">
+              <div>
+                <h2 className="text-lg font-semibold text-white">Kurs auswählen</h2>
+                <p className="text-sm text-slate-300">
+                  Suche in deinen Moodle-Kursen und wähle aus, was heruntergeladen werden soll.
+                </p>
+              </div>
+              <span className="rounded-full bg-brand-500/20 px-3 py-1 text-xs font-medium text-brand-200">
+                {courses.length} Kurse
+              </span>
+            </div>
+
+            <div className="mt-6">
+              <label className="group relative block">
+                <span className="sr-only">Kurs suchen</span>
+                <span className="pointer-events-none absolute inset-y-0 left-4 flex items-center text-slate-400">
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    strokeWidth={1.5}
+                    stroke="currentColor"
+                    className="h-5 w-5"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      d="m21 21-4.35-4.35m1.6-4.9a6.5 6.5 0 1 1-13 0 6.5 6.5 0 0 1 13 0Z"
+                    />
+                  </svg>
+                </span>
+                <input
+                  className="w-full rounded-2xl border border-white/10 bg-slate-900/70 py-3 pl-12 pr-4 text-sm text-slate-100 ring-brand-500 transition focus:border-brand-500/50 focus:outline-none focus:ring"
+                  placeholder="Kursname eingeben..."
+                  value={searchTerm}
+                  onChange={(event) => onSearch(event.target.value)}
+                />
+              </label>
+            </div>
+
+            <div className="mt-6 space-y-3">
+              {filteredCourses.length === 0 && (
+                <div className="rounded-2xl border border-white/10 bg-slate-900/60 px-4 py-6 text-center text-sm text-slate-400">
+                  Kein Kurs gefunden. Versuche es mit einem anderen Suchbegriff.
+                </div>
+              )}
+
+              {filteredCourses.map((course) => {
+                const isActive = selectedCourseId === course.id;
+                return (
+                  <button
+                    key={course.id}
+                    type="button"
+                    onClick={() => onSelectCourse(course.id)}
+                    className={`w-full rounded-2xl border px-4 py-4 text-left transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950 ${
+                      isActive
+                        ? 'border-brand-500/60 bg-brand-500/20 shadow-[0_18px_40px_rgba(91,141,239,0.18)]'
+                        : 'border-white/5 bg-slate-900/40 hover:border-white/20 hover:bg-slate-900/70'
+                    }`}
+                  >
+                    <div className="flex items-start justify-between">
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <h3 className="text-base font-semibold text-white">{course.title}</h3>
+                          {course.isNew && (
+                            <span className="rounded-full bg-emerald-500/20 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-emerald-200">
+                              Neu
+                            </span>
+                          )}
+                        </div>
+                        <p className="mt-1 text-sm text-slate-300">{course.description}</p>
+                        <div className="mt-3 flex flex-wrap items-center gap-3 text-xs text-slate-400">
+                          <span className="inline-flex items-center gap-1 rounded-full bg-white/5 px-3 py-1">
+                            <svg
+                              xmlns="http://www.w3.org/2000/svg"
+                              viewBox="0 0 20 20"
+                              fill="currentColor"
+                              className="h-4 w-4 text-brand-300"
+                            >
+                              <path d="M10.75 2.75a.75.75 0 0 0-1.5 0V5H7a.75.75 0 0 0 0 1.5h2.25v2.25a.75.75 0 0 0 1.5 0V6.5H13A.75.75 0 0 0 13 5h-2.25V2.75ZM5 10.25a.75.75 0 0 1 .75-.75H8v2.25a.75.75 0 0 0 1.5 0V9.5H11a.75.75 0 0 1 0 1.5H9.75v2.25a.75.75 0 0 1-1.5 0V11H5.75a.75.75 0 0 1-.75-.75Z" />
+                              <path d="M4 15.25c0 .966.784 1.75 1.75 1.75h8.5A1.75 1.75 0 0 0 16 15.25V4.75A1.75 1.75 0 0 0 14.25 3h-8.5A1.75 1.75 0 0 0 4 4.75v10.5ZM5.75 4.5h8.5c.138 0 .25.112.25.25v10.5a.25.25 0 0 1-.25.25h-8.5a.25.25 0 0 1-.25-.25V4.75c0-.138.112-.25.25-.25Z" />
+                            </svg>
+                            {course.modules} Module
+                          </span>
+                          <span className="inline-flex items-center gap-1 rounded-full bg-white/5 px-3 py-1">
+                            <svg
+                              xmlns="http://www.w3.org/2000/svg"
+                              fill="none"
+                              viewBox="0 0 24 24"
+                              strokeWidth={1.5}
+                              stroke="currentColor"
+                              className="h-4 w-4 text-emerald-300"
+                            >
+                              <path
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                                d="M4.5 12.75l6 6 9-13.5"
+                              />
+                            </svg>
+                            {course.completion}% abgeschlossen
+                          </span>
+                        </div>
+                      </div>
+                      <div className="flex flex-col items-end text-xs text-slate-400">
+                        <span>Letzte Aktivität</span>
+                        <span className="font-medium text-slate-200">{course.lastUpdated}</span>
+                      </div>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        );
+      };
+
+      const OptionPanel = ({
+        options,
+        selectedOptions,
+        onToggleOption,
+        concurrency,
+        onConcurrencyChange,
+        schedule,
+        onScheduleChange,
+      }) => {
+        return (
+          <div className="rounded-3xl border border-white/10 bg-white/5 p-6 shadow-xl backdrop-blur">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h2 className="text-lg font-semibold text-white">Download Optionen</h2>
+                <p className="text-sm text-slate-300">
+                  Feinjustiere, welche Inhalte heruntergeladen werden und wie dein Workflow aussehen soll.
+                </p>
+              </div>
+              <span className="rounded-full bg-emerald-500/20 px-3 py-1 text-xs font-medium text-emerald-200">
+                Smart Defaults aktiv
+              </span>
+            </div>
+
+            <div className="mt-6 grid gap-3 sm:grid-cols-2">
+              {options.map((option) => (
+                <TogglePill key={option.id} active={selectedOptions.includes(option.id)} {...option} onToggle={onToggleOption} />
+              ))}
+            </div>
+
+            <div className="mt-8 space-y-6 rounded-2xl border border-white/10 bg-slate-900/40 p-5">
+              <div>
+                <div className="flex items-center justify-between text-sm text-slate-300">
+                  <span>Parallele Downloads</span>
+                  <span className="font-semibold text-white">{concurrency} gleichzeitige Tasks</span>
+                </div>
+                <input
+                  type="range"
+                  min="1"
+                  max="8"
+                  value={concurrency}
+                  onChange={(event) => onConcurrencyChange(Number(event.target.value))}
+                  className="mt-3 h-2 w-full cursor-pointer appearance-none rounded-full bg-slate-700 accent-brand-500"
+                />
+                <div className="mt-2 flex justify-between text-xs text-slate-500">
+                  <span>Schonend</span>
+                  <span>Standard</span>
+                  <span>Turbo</span>
+                </div>
+              </div>
+
+              <div className="grid gap-3 sm:grid-cols-2">
+                <label className="flex flex-col gap-2 text-sm">
+                  <span className="text-slate-300">Zeitplan</span>
+                  <select
+                    value={schedule}
+                    onChange={(event) => onScheduleChange(event.target.value)}
+                    className="w-full rounded-xl border border-white/10 bg-slate-900/80 px-4 py-2 text-sm text-slate-100 focus:border-brand-500/60 focus:outline-none focus:ring focus:ring-brand-500/20"
+                  >
+                    <option value="now">Sofort starten</option>
+                    <option value="night">Nachts (02:00 Uhr)</option>
+                    <option value="custom">Eigene Uhrzeit</option>
+                  </select>
+                </label>
+
+                <label className="flex flex-col gap-2 text-sm">
+                  <span className="text-slate-300">Benachrichtigung</span>
+                  <select
+                    className="w-full rounded-xl border border-white/10 bg-slate-900/80 px-4 py-2 text-sm text-slate-100 focus:border-brand-500/60 focus:outline-none focus:ring focus:ring-brand-500/20"
+                    defaultValue="desktop"
+                  >
+                    <option value="desktop">Desktop Push</option>
+                    <option value="email">E-Mail Zusammenfassung</option>
+                    <option value="slack">Slack Notification</option>
+                  </select>
+                </label>
+              </div>
+            </div>
+          </div>
+        );
+      };
+
+      const statusStyles = {
+        pending: 'border-white/10 text-slate-300',
+        running: 'border-brand-500/50 text-brand-200 animate-pulse',
+        success: 'border-emerald-500/30 text-emerald-200',
+        failed: 'border-rose-500/40 text-rose-200',
+      };
+
+      const statusIcons = {
+        pending: <span className="h-2 w-2 rounded-full bg-slate-500/60"></span>,
+        running: <span className="h-2.5 w-2.5 rounded-full bg-brand-400 shadow-[0_0_12px_rgba(91,141,239,0.8)]"></span>,
+        success: (
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4">
+            <path
+              fillRule="evenodd"
+              d="M16.704 4.153a.75.75 0 0 1 .143 1.052l-7.5 9.5a.75.75 0 0 1-1.13.053l-3.5-3.5a.75.75 0 1 1 1.06-1.06l2.894 2.893 6.98-8.844a.75.75 0 0 1 1.053-.094Z"
+              clipRule="evenodd"
+            />
+          </svg>
+        ),
+        failed: (
+          <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="h-4 w-4">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m0 3v.75m-.75 6.75h1.5a9 9 0 1 0-1.5 0Z" />
+          </svg>
+        ),
+      };
+
+      const TaskRow = ({ task }) => (
+        <div
+          className={`flex items-center justify-between rounded-2xl border px-4 py-3 text-sm transition ${
+            statusStyles[task.status] ?? statusStyles.pending
+          }`}
+        >
+          <div className="flex items-center gap-3">
+            <span className="flex h-8 w-8 items-center justify-center rounded-full border border-white/10 bg-slate-900/50">
+              {statusIcons[task.status]}
+            </span>
+            <div>
+              <p className="font-medium text-white">{task.label}</p>
+              <p className="text-xs text-slate-400">{task.detail}</p>
+            </div>
+          </div>
+          <span className="text-xs font-medium uppercase tracking-wide text-slate-400">{task.duration}</span>
+        </div>
+      );
+
+      const ProgressPanel = ({ progress, log }) => (
+        <div className="rounded-3xl border border-white/10 bg-white/5 p-6 shadow-xl backdrop-blur">
+          <div className="flex items-center justify-between">
+            <h2 className="text-lg font-semibold text-white">Live Progress</h2>
+            <span className="flex items-center gap-2 rounded-full border border-brand-500/40 bg-brand-500/10 px-3 py-1 text-xs font-medium text-brand-200">
+              <span className="flex h-2 w-2 rounded-full bg-emerald-400 shadow-[0_0_10px_rgba(52,211,153,0.8)]"></span>
+              Echtzeit-Stream
+            </span>
+          </div>
+
+          <div className="mt-6 space-y-4">
+            <div className="relative overflow-hidden rounded-2xl bg-slate-900/60 p-4">
+              <div className="flex items-center justify-between text-sm text-slate-300">
+                <span>{progress.stage}</span>
+                <span className="font-semibold text-white">{progress.overall}%</span>
+              </div>
+              <div className="mt-3 h-2 rounded-full bg-slate-700/70">
+                <div
+                  className="h-2 rounded-full bg-gradient-to-r from-brand-500 via-brand-600 to-brand-700 transition-all"
+                  style={{ width: `${progress.overall}%` }}
+                />
+              </div>
+            </div>
+
+            <div className="space-y-3">
+              {progress.tasks.map((task) => (
+                <TaskRow key={task.id} task={task} />
+              ))}
+            </div>
+          </div>
+
+          <div className="mt-8">
+            <h3 className="text-sm font-semibold text-slate-200">Aktivitätsfeed</h3>
+            <div className="mt-3 max-h-48 space-y-3 overflow-y-auto pr-2 text-xs text-slate-300 no-scrollbar">
+              {log.map((entry, index) => (
+                <div key={index} className="flex items-start gap-3 rounded-2xl border border-white/5 bg-slate-900/50 p-3">
+                  <span className="mt-1 h-1.5 w-1.5 rounded-full bg-brand-400"></span>
+                  <div>
+                    <p className="font-medium text-white">{entry.title}</p>
+                    <p className="text-[11px] text-slate-400">{entry.timestamp} · {entry.detail}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      );
+
+      const createSimulationFlow = (course, options, concurrency) => {
+        const optionSummary = options.length ? `${options.length} aktivierte Module` : 'Standardlauf';
+        const concurrencyLabel = concurrency === 1 ? 'seriell' : `${concurrency}x parallel`;
+
+        return [
+          {
+            stage: 'Authentifizierung & Vorbereitung',
+            base: 0,
+            target: 25,
+            tasks: [
+              {
+                id: 'session',
+                label: 'Session initialisieren',
+                detail: `Starte Headless Browser & sichere Cookies für ${course.title}.`,
+                duration: '4s',
+                logTitle: 'Session aufgebaut',
+                logDetail: 'Selenium hat sich erfolgreich eingeloggt.',
+              },
+              {
+                id: 'context',
+                label: 'Kurs-Metadaten abrufen',
+                detail: 'Lade Kursstruktur und Teilnehmer*innenrechte.',
+                duration: '3s',
+                logTitle: 'Metadaten geladen',
+                logDetail: `${course.modules} Module analysiert.`,
+              },
+            ],
+          },
+          {
+            stage: 'Intelligente Kursanalyse',
+            base: 25,
+            target: 55,
+            tasks: [
+              {
+                id: 'scan',
+                label: 'Inhalte scannen',
+                detail: `Identifiziere relevante Bereiche für ${optionSummary}.`,
+                duration: '6s',
+                logTitle: 'Scans abgeschlossen',
+                logDetail: 'Seminarstruktur priorisiert.',
+              },
+              {
+                id: 'queue',
+                label: 'Download-Queue erstellen',
+                detail: `Batchgröße ${concurrencyLabel} festgelegt.`,
+                duration: '2s',
+                logTitle: 'Queue erstellt',
+                logDetail: 'Tasks für Downloader übergeben.',
+              },
+            ],
+          },
+          {
+            stage: 'Download & Verarbeitung',
+            base: 55,
+            target: 85,
+            tasks: [
+              {
+                id: 'media',
+                label: 'Medien synchronisieren',
+                detail: 'Streams & Assets werden parallel gesichert.',
+                duration: '12s',
+                logTitle: 'Medien fertig',
+                logDetail: 'Alle Dateien checksum-verifiziert.',
+              },
+              {
+                id: 'ai',
+                label: 'AI Post-Processing',
+                detail: 'Transkripte & Zusammenfassungen werden generiert.',
+                duration: '8s',
+                logTitle: 'AI Insights bereit',
+                logDetail: 'Highlights & Action Items erstellt.',
+              },
+            ],
+          },
+          {
+            stage: 'Finalisierung & Export',
+            base: 85,
+            target: 100,
+            tasks: [
+              {
+                id: 'packaging',
+                label: 'Pakete erstellen',
+                detail: 'Ordnerstruktur & Metadaten archivieren.',
+                duration: '4s',
+                logTitle: 'Pakete versandfertig',
+                logDetail: 'Export als ZIP & JSON abgeschlossen.',
+              },
+              {
+                id: 'handoff',
+                label: 'Ergebnis übergeben',
+                detail: 'Webhook & Desktop-Benachrichtigung senden.',
+                duration: '1s',
+                logTitle: 'Benachrichtigung gesendet',
+                logDetail: 'Nutzer*innen informiert.',
+              },
+            ],
+          },
+        ];
+      };
+
+      const App = () => {
+        const [searchTerm, setSearchTerm] = useState('');
+        const [selectedCourseId, setSelectedCourseId] = useState(COURSES[0]?.id ?? null);
+        const [selectedOptions, setSelectedOptions] = useState(['resources', 'videos', 'structure']);
+        const [concurrency, setConcurrency] = useState(3);
+        const [schedule, setSchedule] = useState('now');
+        const [progress, setProgress] = useState({ stage: 'Bereit zum Download', overall: 0, tasks: [] });
+        const [log, setLog] = useState([]);
+        const [isSimulating, setIsSimulating] = useState(false);
+        const timersRef = useRef([]);
+
+        const selectedCourse = useMemo(
+          () => COURSES.find((course) => course.id === selectedCourseId) ?? null,
+          [selectedCourseId]
+        );
+
+        useEffect(() => () => {
+          timersRef.current.forEach(clearTimeout);
+          timersRef.current = [];
+        }, []);
+
+        useEffect(() => {
+          if (!selectedCourse || isSimulating) return;
+          const flow = createSimulationFlow(selectedCourse, selectedOptions, concurrency);
+          setProgress({
+            stage: 'Bereit zum Download',
+            overall: 0,
+            tasks: flow[0].tasks.map((task) => ({ ...task, status: 'pending' })),
+          });
+        }, [selectedCourse, selectedOptions, concurrency, isSimulating]);
+
+        const toggleOption = (optionId) => {
+          setSelectedOptions((prev) =>
+            prev.includes(optionId) ? prev.filter((id) => id !== optionId) : [...prev, optionId]
+          );
+        };
+
+        const scheduleTimeout = (callback, delay) => {
+          const id = setTimeout(() => {
+            timersRef.current = timersRef.current.filter((timerId) => timerId !== id);
+            callback();
+          }, delay);
+          timersRef.current.push(id);
+        };
+
+        const formatTimestamp = () =>
+          new Date().toLocaleTimeString('de-DE', { hour12: false, minute: '2-digit', second: '2-digit' });
+
+        const startSimulation = () => {
+          if (!selectedCourse || isSimulating) return;
+
+          timersRef.current.forEach(clearTimeout);
+          timersRef.current = [];
+
+          const flow = createSimulationFlow(selectedCourse, selectedOptions, concurrency);
+          setIsSimulating(true);
+          setLog([
+            {
+              title: 'Download initialisiert',
+              detail:
+                schedule === 'now'
+                  ? 'Ausführung startet unmittelbar.'
+                  : schedule === 'night'
+                  ? 'Geplant für 02:00 Uhr lokale Zeit.'
+                  : 'Manueller Start nach Freigabe.',
+              timestamp: formatTimestamp(),
+            },
+          ]);
+
+          let stepIndex = 0;
+          let taskIndex = 0;
+
+          const run = () => {
+            const step = flow[stepIndex];
+            const completion = Math.round(
+              step.base + ((step.target - step.base) * Math.min(taskIndex, step.tasks.length)) / step.tasks.length
+            );
+
+            const tasksWithStatus = step.tasks.map((task, index) => {
+              let status = 'pending';
+              if (index < taskIndex) status = 'success';
+              else if (index === taskIndex && taskIndex < step.tasks.length) status = 'running';
+              else if (taskIndex >= step.tasks.length) status = 'success';
+              return { ...task, status };
+            });
+
+            setProgress({
+              stage: step.stage,
+              overall: Math.min(completion, 99),
+              tasks: tasksWithStatus,
+            });
+
+            if (taskIndex < step.tasks.length) {
+              scheduleTimeout(() => {
+                const finishedTask = step.tasks[taskIndex];
+                setLog((prev) => [
+                  ...prev,
+                  {
+                    title: finishedTask.logTitle,
+                    detail: finishedTask.logDetail,
+                    timestamp: formatTimestamp(),
+                  },
+                ]);
+                taskIndex += 1;
+                run();
+              }, 1300);
+            } else {
+              stepIndex += 1;
+              if (stepIndex >= flow.length) {
+                scheduleTimeout(() => {
+                  setProgress({
+                    stage: 'Download abgeschlossen',
+                    overall: 100,
+                    tasks: flow[flow.length - 1].tasks.map((task) => ({ ...task, status: 'success' })),
+                  });
+                  setLog((prev) => [
+                    ...prev,
+                    {
+                      title: 'Alles erledigt',
+                      detail: `${selectedCourse.title} exportiert (${selectedOptions.length} Optionen aktiv).`,
+                      timestamp: formatTimestamp(),
+                    },
+                  ]);
+                  setIsSimulating(false);
+                }, 800);
+              } else {
+                taskIndex = 0;
+                scheduleTimeout(run, 900);
+              }
+            }
+          };
+
+          run();
+        };
+
+        return (
+          <div className="min-h-screen bg-slate-950 bg-mesh-gradient pb-20">
+            <div className="mx-auto max-w-6xl px-6 pt-16">
+              <header className="flex flex-col gap-6 lg:flex-row lg:items-end lg:justify-between">
+                <div>
+                  <div className="inline-flex items-center gap-2 rounded-full border border-brand-500/40 bg-brand-500/10 px-4 py-1 text-xs font-semibold uppercase tracking-[0.2em] text-brand-200">
+                    Smart Automation Suite
+                  </div>
+                  <h1 className="mt-5 text-4xl font-semibold text-white sm:text-5xl">
+                    Moodle Downloads, neu gedacht.
+                  </h1>
+                  <p className="mt-4 max-w-2xl text-lg text-slate-300">
+                    Steuere den Downloader komplett über dein Browser-Dashboard. Wähle Kurse, aktiviere Optionen und begleite den Fortschritt in Echtzeit – ohne die CLI zu öffnen.
+                  </p>
+                </div>
+                <div className="flex gap-3">
+                  <button
+                    type="button"
+                    className="group flex items-center gap-2 rounded-2xl border border-white/15 bg-white/10 px-4 py-3 text-sm font-semibold text-white backdrop-blur transition hover:border-white/25 hover:bg-white/20"
+                  >
+                    <span className="flex h-8 w-8 items-center justify-center rounded-full bg-brand-500/20 text-brand-200">
+                      <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="h-4 w-4">
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5" />
+                      </svg>
+                    </span>
+                    API Docs
+                  </button>
+                  <button
+                    type="button"
+                    onClick={startSimulation}
+                    disabled={!selectedCourse || isSimulating}
+                    className="group flex items-center gap-2 rounded-2xl border border-brand-500/60 bg-brand-500/80 px-5 py-3 text-sm font-semibold text-white shadow-[0_10px_30px_rgba(91,141,239,0.35)] transition hover:-translate-y-0.5 hover:shadow-[0_12px_35px_rgba(91,141,239,0.45)] disabled:cursor-not-allowed disabled:border-white/10 disabled:bg-white/10 disabled:shadow-none"
+                  >
+                    <span className="flex h-9 w-9 items-center justify-center rounded-full bg-white/10 text-white">
+                      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-5 w-5">
+                        <path d="M3 4.25A2.25 2.25 0 0 1 5.25 2h9.5A2.25 2.25 0 0 1 17 4.25v11.5A2.25 2.25 0 0 1 14.75 18h-9.5A2.25 2.25 0 0 1 3 15.75V4.25ZM5.25 3.5a.75.75 0 0 0-.75.75v11.5c0 .414.336.75.75.75h9.5a.75.75 0 0 0 .75-.75V4.25a.75.75 0 0 0-.75-.75h-9.5Zm2.28 1.22a.75.75 0 0 1 1.06 0l3 3a.75.75 0 0 1-1.06 1.06L9.75 7.56v6.69a.75.75 0 0 1-1.5 0V7.56L6.53 8.78a.75.75 0 0 1-1.06-1.06l3-3Z" />
+                      </svg>
+                    </span>
+                    {isSimulating ? 'Läuft…' : 'Download starten'}
+                  </button>
+                </div>
+              </header>
+
+              <main className="mt-12 grid gap-8 lg:grid-cols-[1.3fr_1fr]">
+                <div className="space-y-8">
+                  <CourseSelector
+                    courses={COURSES}
+                    selectedCourseId={selectedCourseId}
+                    onSelectCourse={setSelectedCourseId}
+                    searchTerm={searchTerm}
+                    onSearch={setSearchTerm}
+                  />
+
+                  <OptionPanel
+                    options={DOWNLOAD_OPTIONS}
+                    selectedOptions={selectedOptions}
+                    onToggleOption={toggleOption}
+                    concurrency={concurrency}
+                    onConcurrencyChange={setConcurrency}
+                    schedule={schedule}
+                    onScheduleChange={setSchedule}
+                  />
+                </div>
+
+                <div className="space-y-8">
+                  {selectedCourse && (
+                    <div className="rounded-3xl border border-white/10 bg-gradient-to-br from-slate-900/80 via-slate-900/50 to-slate-900/20 p-6 backdrop-blur">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <span className="text-xs uppercase tracking-[0.35em] text-slate-400">Aktiver Kurs</span>
+                          <h2 className="mt-3 text-xl font-semibold text-white">{selectedCourse.title}</h2>
+                        </div>
+                        <span className="rounded-full bg-emerald-500/15 px-3 py-1 text-xs font-medium text-emerald-200">
+                          {selectedCourse.completion}% abgeschlossen
+                        </span>
+                      </div>
+                      <p className="mt-4 text-sm text-slate-300">{selectedCourse.description}</p>
+                      <div className="mt-6 grid gap-4 text-xs text-slate-300 sm:grid-cols-2">
+                        <div className="flex items-center gap-2 rounded-2xl border border-white/10 bg-white/5 px-4 py-3">
+                          <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="h-5 w-5 text-brand-200">
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M3 7.5h18M3 12h18M3 16.5h18" />
+                          </svg>
+                          {selectedCourse.modules} Kursmodule
+                        </div>
+                        <div className="flex items-center gap-2 rounded-2xl border border-white/10 bg-white/5 px-4 py-3">
+                          <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="h-5 w-5 text-brand-200">
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M12 6v6h4.5" />
+                          </svg>
+                          Letzte Aktivität: {selectedCourse.lastUpdated}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  <ProgressPanel progress={progress} log={log} />
+                </div>
+              </main>
+            </div>
+          </div>
+        );
+      };
+
+      const root = ReactDOM.createRoot(document.getElementById('root'));
+      root.render(
+        <React.StrictMode>
+          <App />
+        </React.StrictMode>
+      );
+    </script>
+  </body>
+</html>
