@@ -9,6 +9,8 @@ const { MOODLE_SELECTORS, RESOURCE_SELECTORS, FORUM_SELECTORS, FOLDER_SELECTORS 
 
 const readline = require('readline');
 
+const MAX_FILE_SIZE_BYTES = 100 * 1024 * 1024; // 100 MB
+
 const colors = {
     reset: "\x1b[0m",
     bright: "\x1b[1m",
@@ -196,19 +198,95 @@ async function downloadFile(url, sectionDir, resourceName, driver, tempDownloadD
             filename = path.basename(urlParts.pathname);
         }
 
-        const filePath = path.join(sectionDir, sanitizeFilename(filename));
-        const writer = fs.createWriteStream(filePath);
+        const sanitizedFilename = sanitizeFilename(filename);
+        const contentLengthHeader = response.headers['content-length'];
+        if (contentLengthHeader) {
+            const contentLength = parseInt(contentLengthHeader, 10);
+            if (!Number.isNaN(contentLength) && contentLength > MAX_FILE_SIZE_BYTES) {
+                log(`Warnung: Überspringe Download von ${sanitizedFilename} (${(contentLength / (1024 * 1024)).toFixed(2)} MB), da die Datei größer als 100MB ist.`);
+                return;
+            }
+        }
 
-        response.data.pipe(writer);
+        const filePath = path.join(sectionDir, sanitizedFilename);
 
-        return new Promise((resolve, reject) => {
-            writer.on('finish', async () => {
-                log(`Downloaded file to ${filePath}`);
-                await waitForDownloadCompletion(filePath);
-                await verifyDownload(filePath, url, sectionDir, driver);
-                resolve();
+        await new Promise((resolve, reject) => {
+            const stream = response.data;
+            const writer = fs.createWriteStream(filePath);
+            let downloadedBytes = 0;
+            let abortedDueToSize = false;
+            let settled = false;
+
+            const safeResolve = () => {
+                if (!settled) {
+                    settled = true;
+                    resolve();
+                }
+            };
+
+            const safeReject = (error) => {
+                if (!settled) {
+                    settled = true;
+                    reject(error);
+                }
+            };
+
+            const cleanupPartialFile = () => fs.promises.unlink(filePath).catch(() => {});
+
+            const abortDueToSize = () => {
+                if (abortedDueToSize) {
+                    return;
+                }
+                abortedDueToSize = true;
+                const sizeInMb = downloadedBytes / (1024 * 1024);
+                log(`Warnung: Überspringe Download von ${sanitizedFilename} (${sizeInMb.toFixed(2)} MB), da die Datei größer als 100MB ist.`);
+                stream.destroy();
+                writer.destroy();
+            };
+
+            stream.on('data', (chunk) => {
+                downloadedBytes += chunk.length;
+                if (downloadedBytes > MAX_FILE_SIZE_BYTES) {
+                    abortDueToSize();
+                }
             });
-            writer.on('error', reject);
+
+            stream.on('error', (err) => {
+                if (abortedDueToSize) {
+                    cleanupPartialFile().finally(safeResolve);
+                } else {
+                    safeReject(err);
+                }
+            });
+
+            writer.on('finish', () => {
+                if (abortedDueToSize) {
+                    cleanupPartialFile().finally(safeResolve);
+                    return;
+                }
+
+                (async () => {
+                    log(`Downloaded file to ${filePath}`);
+                    await waitForDownloadCompletion(filePath);
+                    await verifyDownload(filePath, url, sectionDir, driver);
+                })().then(safeResolve).catch(safeReject);
+            });
+
+            writer.on('error', (err) => {
+                if (abortedDueToSize) {
+                    cleanupPartialFile().finally(safeResolve);
+                } else {
+                    safeReject(err);
+                }
+            });
+
+            writer.on('close', () => {
+                if (abortedDueToSize) {
+                    cleanupPartialFile().finally(safeResolve);
+                }
+            });
+
+            stream.pipe(writer);
         });
     } catch (err) {
         log(`Failed to download file from ${url}: ${err.message}`);
