@@ -5,6 +5,7 @@ const { By, until } = require('selenium-webdriver');
 const { sanitizeFilename } = require('./directories');
 const axios = require('axios');
 const sizeOf = require('image-size');
+const { FORUM_SELECTORS } = require('./selectors');
 
 async function downloadResource(url, downloadPath, cookies) {
     const response = await axios({
@@ -58,8 +59,8 @@ async function scrapeForumPosts(url, sectionPath, forumName, driver) {
 
         log(`Waiting for discussion list element on forum page: ${url}`);
         try {
-            await driver.wait(until.elementLocated(By.css('[id^="discussion-list-"]')), 10000);
-            const discussionListElement = await driver.findElement(By.css('[id^="discussion-list-"]'));
+            await driver.wait(until.elementLocated(By.css(FORUM_SELECTORS.discussionList)), 10000);
+            const discussionListElement = await driver.findElement(By.css(FORUM_SELECTORS.discussionList));
             const discussionListHTML = await discussionListElement.getAttribute('outerHTML');
             log(`Found discussion list element on forum page: ${url}`);
             log(`Discussion list HTML: ${discussionListHTML}`);
@@ -70,13 +71,13 @@ async function scrapeForumPosts(url, sectionPath, forumName, driver) {
             throw err;
         }
 
-        const discussions = await driver.findElements(By.css('tr.discussion'));
+        const discussions = await driver.findElements(By.css(FORUM_SELECTORS.discussionRow));
         log(`Found ${discussions.length} discussions on forum page: ${url}`);
 
         // Extract discussion URLs
         const discussionUrls = [];
         for (const discussion of discussions) {
-            const threadTitleElement = await discussion.findElement(By.css('th.topic a'));
+            const threadTitleElement = await discussion.findElement(By.css(FORUM_SELECTORS.threadTitle));
             const threadTitle = await threadTitleElement.getText();
             const threadUrl = await threadTitleElement.getAttribute('href');
             discussionUrls.push({ threadTitle, threadUrl });
@@ -92,9 +93,9 @@ async function scrapeForumPosts(url, sectionPath, forumName, driver) {
             log(`Opening thread: ${threadTitle} at URL: ${threadUrl}`);
             await driver.get(threadUrl);
 
-            await driver.wait(until.elementLocated(By.css('article.forum-post-container')), 10000);
+            await driver.wait(until.elementLocated(By.css(FORUM_SELECTORS.forumPostContainer)), 10000);
 
-            const posts = await driver.findElements(By.css('article.forum-post-container'));
+            const posts = await driver.findElements(By.css(FORUM_SELECTORS.forumPostContainer));
             let postIndex = 1;
 
             for (const post of posts) {

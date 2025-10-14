@@ -5,6 +5,7 @@ const { log } = require('./logger');
 const { By, until } = require('selenium-webdriver');
 const { createDirectories, clearDirectory, sanitizeFilename, safeUnlink } = require('./directories');
 const { scrapeForumPosts } = require('./forumScraper');
+const { MOODLE_SELECTORS, RESOURCE_SELECTORS, FORUM_SELECTORS, FOLDER_SELECTORS } = require('./selectors');
 
 const readline = require('readline');
 
@@ -102,8 +103,8 @@ async function processResource(url, sectionPath, resourceName, driver, tempDownl
         log(`\x1b[32mProcessing resource URL:\x1b[0m ${url}`);
         await driver.get(url);
 
-        const resourceContentLinks = await driver.findElements(By.css('.resourcecontent a[href*="pluginfile.php"]'));
-        const resourceContentImages = await driver.findElements(By.css('.resourcecontent img[src*="pluginfile.php"]'));
+        const resourceContentLinks = await driver.findElements(By.css(RESOURCE_SELECTORS.resourceContentLink));
+        const resourceContentImages = await driver.findElements(By.css(RESOURCE_SELECTORS.resourceContentImage));
 
         log(`Resource content links found: ${resourceContentLinks.length}`);
         log(`Resource content images found: ${resourceContentImages.length}`);
@@ -135,11 +136,11 @@ async function processFolder(url, sectionPath, folderName, driver, tempDownloadD
             fs.mkdirSync(folderPath, { recursive: true });
         }
 
-        const folderLinks = await driver.findElements(By.css('.fp-filename-icon a'));
+        const folderLinks = await driver.findElements(By.css(FOLDER_SELECTORS.folderLinks));
 
         for (const link of folderLinks) {
             const downloadLink = await link.getAttribute('href');
-            const fileName = await link.findElement(By.css('.fp-filename')).getText();
+            const fileName = await link.findElement(By.css(FOLDER_SELECTORS.folderFileName)).getText();
 
             log(`Found file in folder: ${fileName} at URL: ${downloadLink}`);
             await downloadFile(downloadLink, folderPath, fileName, driver, tempDownloadDir, clearDirectory);
@@ -154,7 +155,7 @@ async function processLink(url, sectionPath, linkName, driver) {
         log(`\x1b[35mProcessing link URL:\x1b[0m ${url}`);
         await driver.get(url);
 
-        const linkContentElement = await driver.findElement(By.css('.urlworkaround a'));
+        const linkContentElement = await driver.findElement(By.css(MOODLE_SELECTORS.activityLink));
         const linkContent = await linkContentElement.getAttribute('href');
         log(`Found link content: ${linkContent}`);
 
@@ -233,7 +234,7 @@ async function verifyDownload(filePath, url, sectionDir, driver) {
     } catch (err) {
         log(`\x1b[31mIntegrity check failed for file:\x1b[0m ${filePath}. Error: ${err.message}`);
         log(`Retrying download for ${url}`);
-        await downloadFile(url, sectionDir, driver); // Retry download
+        await downloadFile(url, sectionDir, resourceName, driver, tempDownloadDir, clearDirectory); // Retry download
     }
 }
 

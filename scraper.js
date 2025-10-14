@@ -2,106 +2,186 @@ require('dotenv').config();
 const { Builder } = require('selenium-webdriver');
 const chrome = require('selenium-webdriver/chrome');
 const path = require('path');
+const fs = require('fs');
 const yargs = require('yargs/yargs');
 const { hideBin } = require('yargs/helpers');
 const { log } = require('./utils/logger');
-const { createDirectories, clearDirectory, sanitizeFilename } = require('./utils/directories');
-const { loginToMoodle, getCourseTitle, enumerateDownloads } = require('./utils/moodle');
+const { createDirectories, sanitizeFilename } = require('./utils/directories');
+const { loginToMoodle, getCourseTitle, enumerateDownloads, listAvailableCourses } = require('./utils/moodle');
 const { processDownloadQueue } = require('./utils/downloader');
-const { scrapeForumPosts } = require('./utils/forumScraper');
+const { loadCourseState, saveCourseState } = require('./utils/stateManager');
+const inquirer = require('inquirer').default;
 
-const moodleUrl = process.env.MOODLE_URL;
-const moodleLoginURL = process.env.MOODLE_LOGIN_URL;
-const username = process.env.MOODLE_USERNAME;
-const password = process.env.MOODLE_PASSWORD;
-const courseUrl = process.env.COURSE_URL;
+const {
+    MOODLE_URL,
+    MOODLE_LOGIN_URL,
+    MOODLE_USERNAME,
+    MOODLE_PASSWORD,
+    COURSE_URL
+} = process.env;
 
 const argv = yargs(hideBin(process.argv))
     .options({
-        username: { type: 'string', demandOption: false, describe: 'Moodle username' },
-        password: { type: 'string', demandOption: false, describe: 'Moodle password' },
-        courseUrl: { type: 'string', demandOption: false, describe: 'URL of the Moodle course' },
-        outputDir: { type: 'string', default: './downloads', describe: 'Directory to save downloads' },
-        maxConcurrentDownloads: { type: 'number', default: 3, describe: 'Maximum number of concurrent downloads' },
-        downloadMode: { 
-            type: 'string', 
-            choices: ['all', 'resources-only', 'forums-only'], 
-            default: 'all', 
-            describe: 'Download mode: all, resources-only, forums-only' 
-        }
+        coursesFile: { type: 'string', describe: 'Pfad zur JSON-Datei mit den Kurskonfigurationen' },
+        courseUrl: { type: 'string', describe: 'URL des Moodle-Kurses für manuellen Download', default: COURSE_URL },
+        outputDir: { type: 'string', default: './downloads', describe: 'Verzeichnis zum Speichern der Downloads' },
+        maxConcurrentDownloads: { type: 'number', default: 3, describe: 'Maximale Anzahl gleichzeitiger Downloads' },
+        interval: { type: 'number', default: 3600000, describe: 'Intervall in Millisekunden zwischen den Prüfungen' },
+        downloadMode: {
+            type: 'string',
+            choices: ['all', 'resources-only', 'forums-only', 'quizzes-only'],
+            default: 'all',
+            describe: 'Download-Modus: all, resources-only, forums-only, quizzes-only'
+        },
+        enableNotifications: { type: 'boolean', default: false, describe: 'Benachrichtigungen bei neuen Ressourcen aktivieren' },
+        manualDownload: { type: 'boolean', default: false, describe: 'Manuellen Downloadmodus aktivieren' },
+        keepBrowserOpen: { type: 'boolean', default: false, describe: 'Browser nach Abschluss offen halten' }
     })
     .help()
     .alias('help', 'h')
     .argv;
 
 const tempDownloadDir = path.join(__dirname, 'temp-downloads');
-const finalDownloadDir = argv.outputDir;
-
-createDirectories([tempDownloadDir, finalDownloadDir]);
+createDirectories([tempDownloadDir]);
 
 const options = new chrome.Options();
-options.addArguments('--disable-gpu', '--no-sandbox');
+const CHROME_BINARY="/Applications/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing"
+options.setChromeBinaryPath(CHROME_BINARY);
+options.addArguments('--disable-gpu', '--no-sandbox', '--headless');
 options.setUserPreferences({
     'download.default_directory': tempDownloadDir,
     'download.prompt_for_download': false,
     'download.directory_upgrade': true,
     'plugins.always_open_pdf_externally': true,
-    'profile.default_content_settings.popups': 0,
-    'profile.content_settings.exceptions.automatic_downloads.*.setting': 1,
-    'profile.default_content_setting_values.automatic_downloads': 1,
-    'profile.content_settings.exceptions.plugins.*.setting': 1,
-    'profile.content_settings.plugin_run.*.setting': 1,
-    'profile.content_settings.exceptions.plugins.*.last_used_time': Date.now(),
-    'profile.default_content_setting_values.plugins': 1,
-    'profile.managed_default_content_settings.plugins': 1,
-    'network.http.max-persistent-connections-per-server': 10,
-    'network.http.redirection-limit': 30,
-    'permissions.default.image': 2,
-    'permissions.default.stylesheet': 2,
 });
 
-(async function downloadMoodleCourse() {
-    const driver = await new Builder().forBrowser('chrome').setChromeOptions(options).build();
-    try {
-        await loginToMoodle(driver, moodleLoginURL, username, password, moodleUrl);
-        const courseTitle = await getCourseTitle(driver, courseUrl);
-        const coursePath = path.join(finalDownloadDir, sanitizeFilename(courseTitle));
-        createDirectories([coursePath]);
-        const downloadList = await enumerateDownloads(driver, coursePath, argv.downloadMode);
+(async function main() {
+    let driver;
 
-        if (argv.downloadMode === 'all') {
-            // Process both forums and resources
-            const forumList = [];
-            const resourceList = [];
-            for (const item of downloadList) {
-                if (item.isForum) {
-                    forumList.push(item);
-                } else {
-                    resourceList.push(item);
+    try {
+        driver = await new Builder()
+            .forBrowser('chrome')
+            .setChromeOptions(options)
+            .build();
+
+        if (argv.manualDownload && argv.courseUrl) {
+            await downloadSingleCourse(driver, argv.courseUrl, argv.outputDir, argv.downloadMode);
+        } else if (argv.coursesFile) {
+            const courses = JSON.parse(fs.readFileSync(argv.coursesFile, 'utf8'));
+            const interval = argv.interval;
+
+            while (true) {
+                for (const courseConfig of courses) {
+                    await syncCourse(driver, courseConfig);
                 }
+                log(`Synchronisation aller Kurse abgeschlossen. Warte ${interval / 1000} Sekunden vor dem nächsten Check.`);
+                await new Promise(resolve => setTimeout(resolve, interval));
             }
-            // Process resources first
-            await processDownloadQueue(resourceList, argv.maxConcurrentDownloads, driver, tempDownloadDir, clearDirectory);
-            // Process forums
-            for (const item of forumList) {
-                await scrapeForumPosts(item.url, item.path, item.name, driver);
-            }
-        } else if (argv.downloadMode === 'forums-only') {
-            // Only process forums
-            for (const item of downloadList) {
-                if (item.isForum) {
-                    await scrapeForumPosts(item.url, item.path, item.name, driver);
-                } else {
-                    log(`Skipping non-forum item: ${item.name}`);
-                }
-            }
+        } else if (COURSE_URL) {
+            await downloadSingleCourse(driver, COURSE_URL, argv.outputDir, argv.downloadMode);
         } else {
-            // Only process resources
-            await processDownloadQueue(downloadList, argv.maxConcurrentDownloads, driver, tempDownloadDir, clearDirectory);
+            // 🧠 Neue automatische Kurswahl via CLI
+            log('Kein Kurs angegeben. Starte interaktive Auswahl.');
+
+            await loginToMoodle(driver, MOODLE_LOGIN_URL, MOODLE_USERNAME, MOODLE_PASSWORD, MOODLE_URL);
+            const courses = await listAvailableCourses(driver);
+
+            if (courses.length === 0) {
+                log('Es wurden keine Kurse gefunden.');
+                return;
+            }
+
+            const { selectedCourseIndex } = await inquirer.prompt([
+                {
+                    type: 'list',
+                    name: 'selectedCourseIndex',
+                    message: 'Wähle einen Kurs aus:',
+                    choices: courses.map((course, i) => ({
+                        name: `${course.title} (ID: ${course.courseId})`,
+                        value: i
+                    }))
+                }
+            ]);
+
+            const selectedCourse = courses[selectedCourseIndex];
+            log(`Du hast gewählt: ${selectedCourse.title} (${selectedCourse.courseId})`);
+            await downloadSingleCourse(driver, selectedCourse.url, argv.outputDir, argv.downloadMode, true);
         }
     } catch (err) {
-        log(`An error occurred: ${err}`);
+        log(`Ein Fehler ist aufgetreten: ${err}`);
     } finally {
-        await driver.quit();
+        try {
+            if (!argv.keepBrowserOpen) {
+                log('Closing browser instance as --keepBrowserOpen is not set.', {}, driver);
+                await driver.quit();
+            } else {
+                log('Browser instance will remain open due to --keepBrowserOpen flag. Press Ctrl+C to terminate.', {}, driver);
+                setInterval(() => {}, 1000);
+            }
+        } catch (err) {
+            log('Error during driver.quit().', { error: err.message }, driver);
+        }
     }
+
+    process.on('SIGINT', async () => {
+        log('Caught interrupt signal. Closing browser.', {}, driver);
+        if (driver) await driver.quit();
+        process.exit(0);
+    });
 })();
+
+
+async function downloadSingleCourse(driver, courseUrl, outputDir, downloadMode, loggedin) {
+    try {
+        if ( !loggedin ) {
+            await loginToMoodle(driver, MOODLE_LOGIN_URL, MOODLE_USERNAME, MOODLE_PASSWORD, MOODLE_URL);
+        }
+        const courseTitle = await getCourseTitle(driver, courseUrl);
+        const coursePath = path.join(outputDir, sanitizeFilename(courseTitle));
+        createDirectories([coursePath]);
+
+        const { downloadList } = await enumerateDownloads(driver, coursePath, downloadMode);
+
+        log(`Starte manuellen Download für den Kurs: ${courseTitle}`);
+        await processDownloadQueue(downloadList, argv.maxConcurrentDownloads, driver, tempDownloadDir);
+    } catch (err) {
+        log(`Ein Fehler ist aufgetreten: ${err}`);
+    }
+}
+
+async function syncCourse(driver, courseConfig) {
+    const { courseUrl, outputDir, downloadMode } = courseConfig;
+
+    try {
+        await loginToMoodle(driver, MOODLE_LOGIN_URL, MOODLE_USERNAME, MOODLE_PASSWORD, MOODLE_URL);
+        const courseTitle = await getCourseTitle(driver, courseUrl);
+        const coursePath = path.join(outputDir, sanitizeFilename(courseTitle));
+        createDirectories([coursePath]);
+
+        const previousState = loadCourseState(coursePath);
+
+        const { downloadList, currentState } = await enumerateDownloads(driver, coursePath, downloadMode);
+
+        const newResources = getNewResources(previousState, currentState);
+
+        if (newResources.length > 0) {
+            log(`Erkannte ${newResources.length} neue oder aktualisierte Ressourcen im Kurs ${courseTitle}.`);
+            await processDownloadQueue(newResources, argv.maxConcurrentDownloads, driver, tempDownloadDir);
+            saveCourseState(coursePath, currentState);
+        } else {
+            log(`Keine neuen Ressourcen im Kurs ${courseTitle} erkannt.`);
+        }
+    } catch (err) {
+        log(`Fehler beim Synchronisieren des Kurses ${courseUrl}: ${err}`);
+    }
+}
+
+function getNewResources(previousState, currentState) {
+    const newResources = [];
+    for (const resourceKey in currentState) {
+        if (!previousState[resourceKey] || currentState[resourceKey].hash !== previousState[resourceKey].hash) {
+            newResources.push(currentState[resourceKey]);
+        }
+    }
+    return newResources;
+}
