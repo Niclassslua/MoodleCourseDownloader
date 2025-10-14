@@ -22,7 +22,7 @@ MoodleScraper is a powerful and automated Node.js application designed to stream
 1. **Clone the repository**
 
     ```sh
-    git clone https://github.com/yourusername/MoodleScraper.git
+    git clone https://github.com/Niclassslua/MoodleScraper.git
     cd MoodleScraper
     ```
 
