@@ -10,6 +10,8 @@ const { MOODLE_SELECTORS, RESOURCE_SELECTORS, FORUM_SELECTORS, FOLDER_SELECTORS 
 const readline = require('readline');
 
 const MAX_FILE_SIZE_BYTES = 100 * 1024 * 1024; // 100 MB
+const DOWNLOAD_DEBUG_INTERVAL_BYTES = 5 * 1024 * 1024; // Log every 5 MB when debugging
+const DEBUG_DOWNLOAD_SIZE = process.env.MCD_DEBUG_DOWNLOAD_SIZE === '1';
 
 const colors = {
     reset: "\x1b[0m",
@@ -43,6 +45,18 @@ const colors = {
         crimson: "\x1b[48m"
     }
 };
+
+function logDownloadSizeDebug(message, additionalData = {}) {
+    if (!DEBUG_DOWNLOAD_SIZE) {
+        return;
+    }
+
+    log(message, {
+        fileName: 'utils/downloader.js',
+        functionName: 'downloadFile',
+        additionalData,
+    });
+}
 
 function showProgress(completed, total) {
     readline.cursorTo(process.stdout, 0);
@@ -202,10 +216,28 @@ async function downloadFile(url, sectionDir, resourceName, driver, tempDownloadD
         const contentLengthHeader = response.headers['content-length'];
         if (contentLengthHeader) {
             const contentLength = parseInt(contentLengthHeader, 10);
+            logDownloadSizeDebug('Received Content-Length header for download', {
+                url,
+                resourceName,
+                contentLength,
+                limitBytes: MAX_FILE_SIZE_BYTES,
+            });
             if (!Number.isNaN(contentLength) && contentLength > MAX_FILE_SIZE_BYTES) {
                 log(`Warnung: Überspringe Download von ${sanitizedFilename} (${(contentLength / (1024 * 1024)).toFixed(2)} MB), da die Datei größer als 100MB ist.`);
+                logDownloadSizeDebug('Skipped download due to Content-Length exceeding limit', {
+                    url,
+                    resourceName,
+                    contentLength,
+                    limitBytes: MAX_FILE_SIZE_BYTES,
+                });
                 return;
             }
+        } else {
+            logDownloadSizeDebug('No Content-Length header present; relying on streamed size enforcement', {
+                url,
+                resourceName,
+                limitBytes: MAX_FILE_SIZE_BYTES,
+            });
         }
 
         const filePath = path.join(sectionDir, sanitizedFilename);
@@ -216,6 +248,7 @@ async function downloadFile(url, sectionDir, resourceName, driver, tempDownloadD
             let downloadedBytes = 0;
             let abortedDueToSize = false;
             let settled = false;
+            let nextDebugThreshold = DOWNLOAD_DEBUG_INTERVAL_BYTES;
 
             const safeResolve = () => {
                 if (!settled) {
@@ -240,12 +273,27 @@ async function downloadFile(url, sectionDir, resourceName, driver, tempDownloadD
                 abortedDueToSize = true;
                 const sizeInMb = downloadedBytes / (1024 * 1024);
                 log(`Warnung: Überspringe Download von ${sanitizedFilename} (${sizeInMb.toFixed(2)} MB), da die Datei größer als 100MB ist.`);
+                logDownloadSizeDebug('Aborted streaming download after exceeding size limit', {
+                    url,
+                    resourceName,
+                    downloadedBytes,
+                    limitBytes: MAX_FILE_SIZE_BYTES,
+                });
                 stream.destroy();
                 writer.destroy();
             };
 
             stream.on('data', (chunk) => {
                 downloadedBytes += chunk.length;
+                if (DEBUG_DOWNLOAD_SIZE && downloadedBytes >= nextDebugThreshold) {
+                    logDownloadSizeDebug('Download progress update', {
+                        url,
+                        resourceName,
+                        downloadedBytes,
+                        limitBytes: MAX_FILE_SIZE_BYTES,
+                    });
+                    nextDebugThreshold += DOWNLOAD_DEBUG_INTERVAL_BYTES;
+                }
                 if (downloadedBytes > MAX_FILE_SIZE_BYTES) {
                     abortDueToSize();
                 }
@@ -266,6 +314,12 @@ async function downloadFile(url, sectionDir, resourceName, driver, tempDownloadD
                 }
 
                 (async () => {
+                    logDownloadSizeDebug('Finished downloading file', {
+                        url,
+                        resourceName,
+                        downloadedBytes,
+                        limitBytes: MAX_FILE_SIZE_BYTES,
+                    });
                     log(`Downloaded file to ${filePath}`);
                     await waitForDownloadCompletion(filePath);
                     await verifyDownload(filePath, url, sectionDir, driver);

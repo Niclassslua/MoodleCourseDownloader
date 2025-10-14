@@ -117,6 +117,12 @@ Das React/Tailwind-Dashboard ist nun direkt mit dem Node.js-Scraper verdrahtet. 
 - Adjust the timeouts and waits in the script if you encounter issues with loading times or slow network conditions.
 - Keep your `.env` file secure and do not share your credentials.
 
+### 🔍 Debugging download sizes
+
+Set the environment variable `MCD_DEBUG_DOWNLOAD_SIZE=1` before starting the scraper to receive detailed log output about the
+detected file sizes and the enforcement of the 100 MB download limit. This helps diagnose why individual files are skipped or
+allowed to download and reports incremental progress while streaming large files.
+
 ## 🤝 Contributing
 
 Contributions, issues, and feature requests are welcome! Feel free to check the [issues page](https://github.com/Niclassslua/MoodleCourseDownloader/issues). If you want to contribute, please fork the repository and make changes as you'd like. Pull requests are warmly welcomed.
