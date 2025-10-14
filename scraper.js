@@ -93,8 +93,14 @@ options.setUserPreferences({
             return;
         }
 
-        if (argv.manualDownload && argv.courseUrl) {
-            await downloadSingleCourse(driver, argv.courseUrl, argv.outputDir, argv.downloadMode);
+        const normalizedCourseUrl = typeof argv.courseUrl === 'string' ? argv.courseUrl.trim() : '';
+
+        if (argv.manualDownload) {
+            if (!normalizedCourseUrl) {
+                await log('Manueller Downloadmodus benötigt eine Kurs-URL.');
+                return;
+            }
+            await downloadSingleCourse(driver, normalizedCourseUrl, argv.outputDir, argv.downloadMode);
         } else if (argv.coursesFile) {
             const courses = JSON.parse(fs.readFileSync(argv.coursesFile, 'utf8'));
             const interval = argv.interval;
@@ -106,8 +112,8 @@ options.setUserPreferences({
                 log(`Synchronisation aller Kurse abgeschlossen. Warte ${interval / 1000} Sekunden vor dem nächsten Check.`);
                 await new Promise(resolve => setTimeout(resolve, interval));
             }
-        } else if (COURSE_URL) {
-            await downloadSingleCourse(driver, COURSE_URL, argv.outputDir, argv.downloadMode);
+        } else if (normalizedCourseUrl) {
+            await downloadSingleCourse(driver, normalizedCourseUrl, argv.outputDir, argv.downloadMode);
         } else {
             // 🧠 Neue automatische Kurswahl via CLI
             log('Kein Kurs angegeben. Starte interaktive Auswahl.');
