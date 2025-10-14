@@ -11,16 +11,18 @@ import os
 import queue
 import subprocess
 import threading
+import time
 from collections import deque
 from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Deque, Dict, List, Optional, Tuple
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
 SCRAPER_PATH = os.path.join(ROOT_DIR, "scraper.js")
-DEFAULT_COURSES_FILE = os.environ.get("COURSES_FILE", os.path.join(ROOT_DIR, "courses.json"))
+DEFAULT_COURSES_FILE = os.environ.get("COURSES_FILE")
+WEBUI_INDEX = os.path.join(ROOT_DIR, "webui", "index.html")
 
 LOG_HISTORY: Deque[Dict[str, str]] = deque(maxlen=500)
 STATE: Dict[str, Optional[str]] = {"status": "idle"}
@@ -29,6 +31,7 @@ CLIENTS_LOCK = threading.Lock()
 SCRAPER_LOCK = threading.Lock()
 SCRAPER_THREAD: Optional[threading.Thread] = None
 SCRAPER_PROCESS: Optional[subprocess.Popen] = None
+COURSES_CACHE: Tuple[float, List[Dict[str, object]]] = (0.0, [])
 
 
 def current_timestamp() -> str:
@@ -87,15 +90,102 @@ def set_status(status: str, **details: object) -> None:
     broadcast(payload)
 
 
-def _load_courses() -> List[Dict[str, object]]:
+def _normalize_courses(raw_courses: List[Dict[str, object]]) -> List[Dict[str, object]]:
+    normalized: List[Dict[str, object]] = []
+    for item in raw_courses:
+        if not isinstance(item, dict):
+            continue
+        course_id = item.get("courseId") or item.get("id") or item.get("course_id") or ""
+        normalized.append(
+            {
+                "id": str(course_id) if course_id is not None else "",
+                "title": item.get("title") or item.get("name") or "Unbenannter Kurs",
+                "url": item.get("url"),
+                "description": item.get("description")
+                or item.get("summary")
+                or item.get("shortname"),
+            }
+        )
+    return normalized
+
+
+def _load_courses_from_scraper(force: bool = False) -> List[Dict[str, object]]:
+    global COURSES_CACHE
+    cache_time, cached_courses = COURSES_CACHE
+    now = time.time()
+    if cached_courses and not force and now - cache_time < 300:
+        return cached_courses
+
+    env = os.environ.copy()
+    env.setdefault("MCD_SILENT_LOGS", "1")
+
+    timeout = int(env.get("MCD_COURSE_TIMEOUT", "120"))
+    try:
+        result = subprocess.run(
+            ["node", SCRAPER_PATH, "--listCourses"],
+            cwd=ROOT_DIR,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            env=env,
+        )
+    except subprocess.TimeoutExpired:
+        append_log("stderr", "Kursliste konnte nicht geladen werden: Zeitüberschreitung")
+        return cached_courses
+    except OSError as exc:
+        append_log("stderr", f"Kursliste konnte nicht geladen werden: {exc}")
+        return cached_courses
+
+    stdout = (result.stdout or "").strip()
+    stderr = (result.stderr or "").strip()
+    if result.returncode != 0:
+        message = stdout or stderr
+        if message:
+            append_log("stderr", f"Kursliste fehlgeschlagen ({result.returncode}): {message}")
+        else:
+            append_log("stderr", f"Kursliste fehlgeschlagen mit Code {result.returncode}")
+        return cached_courses
+
+    if not stdout:
+        append_log("stderr", "Kursliste lieferte keine Daten")
+        return cached_courses
+
+    try:
+        payload = json.loads(stdout)
+    except json.JSONDecodeError as exc:
+        append_log("stderr", f"Antwort der Kursliste ist ungültig: {exc}")
+        return cached_courses
+
+    if isinstance(payload, dict):
+        raw_courses = payload.get("courses")
+        if not isinstance(raw_courses, list):
+            append_log("stderr", "Antwort der Kursliste enthielt keine Kursliste")
+            return cached_courses
+    elif isinstance(payload, list):
+        raw_courses = payload
+    else:
+        append_log("stderr", "Antwort der Kursliste hatte ein unbekanntes Format")
+        return cached_courses
+
+    normalized = _normalize_courses(raw_courses)
+    COURSES_CACHE = (now, normalized)
+    return normalized
+
+
+def _load_courses(force: bool = False) -> List[Dict[str, object]]:
+    courses = _load_courses_from_scraper(force=force)
+    if courses:
+        return courses
+
     if DEFAULT_COURSES_FILE and os.path.exists(DEFAULT_COURSES_FILE):
         try:
             with open(DEFAULT_COURSES_FILE, "r", encoding="utf-8") as fh:
                 data = json.load(fh)
             if isinstance(data, list):
-                return data
+                return _normalize_courses(data)
         except (json.JSONDecodeError, OSError) as exc:
             append_log("stderr", f"Kurse konnten nicht geladen werden: {exc}")
+
     env_course = os.environ.get("COURSE_URL")
     if env_course:
         return [
@@ -106,6 +196,7 @@ def _load_courses() -> List[Dict[str, object]]:
                 "description": "Kurs aus der COURSE_URL-Umgebungsvariable",
             }
         ]
+
     return []
 
 
@@ -213,10 +304,14 @@ class RequestHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
-        if parsed.path == "/api/status":
+        if parsed.path in {"/", "/index.html"}:
+            self._handle_root()
+        elif parsed.path == "/api/status":
             self._handle_status()
         elif parsed.path == "/api/courses":
-            self._handle_courses()
+            params = parse_qs(parsed.query or "")
+            force = "refresh" in params or params.get("force") == ["1"]
+            self._handle_courses(force=force)
         elif parsed.path == "/api/stream":
             self._handle_stream()
         else:
@@ -239,9 +334,25 @@ class RequestHandler(BaseHTTPRequestHandler):
         }
         self._send_json(payload)
 
-    def _handle_courses(self) -> None:
-        payload = {"courses": _load_courses()}
+    def _handle_courses(self, force: bool = False) -> None:
+        payload = {"courses": _load_courses(force=force)}
         self._send_json(payload)
+
+    def _handle_root(self) -> None:
+        if not os.path.exists(WEBUI_INDEX):
+            self.send_error(HTTPStatus.NOT_FOUND, "Dashboard nicht gefunden")
+            return
+        try:
+            with open(WEBUI_INDEX, "rb") as fh:
+                body = fh.read()
+        except OSError as exc:
+            self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR, f"Datei konnte nicht gelesen werden: {exc}")
+            return
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
     def _handle_run(self) -> None:
         length = int(self.headers.get("Content-Length", "0"))

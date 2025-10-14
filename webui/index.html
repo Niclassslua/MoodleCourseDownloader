@@ -68,15 +68,18 @@
   <body class="bg-slate-950 text-slate-100">
     <div id="root"></div>
     <script type="text/babel">
-      const { useEffect, useMemo, useRef, useState } = React;
+      const { useCallback, useEffect, useMemo, useRef, useState } = React;
 
       const resolveApiBase = () => {
         if (window.API_BASE) {
           return window.API_BASE.replace(/\/$/, '');
         }
-        const protocol = window.location.protocol;
-        const host = window.location.hostname;
-        return `${protocol}//${host}:8000`;
+        const { protocol, hostname, port } = window.location;
+        if (!hostname) {
+          return 'http://localhost:8000';
+        }
+        const portSegment = port ? `:${port}` : '';
+        return `${protocol}//${hostname}${portSegment}`;
       };
 
       const deriveWebSocketUrl = (base) => {
@@ -322,6 +325,34 @@
         const seenLogsRef = useRef(new Set());
         const sseRef = useRef(null);
 
+        const loadCourses = useCallback(
+          async ({ force = false } = {}) => {
+            setLoadingCourses(true);
+            try {
+              const endpoint = force ? `${API_BASE}/api/courses?refresh=1` : `${API_BASE}/api/courses`;
+              const response = await fetch(endpoint);
+              if (!response.ok) {
+                throw new Error(`Fehler beim Laden der Kurse (${response.status})`);
+              }
+              const data = await response.json();
+              const incoming = Array.isArray(data.courses) ? data.courses : [];
+              setCourses(incoming);
+              setSelectedCourse((prev) => {
+                if (!prev) {
+                  return null;
+                }
+                return incoming.find((course) => course.url === prev.url) ?? null;
+              });
+              setCourseError(null);
+            } catch (error) {
+              setCourseError(error.message);
+            } finally {
+              setLoadingCourses(false);
+            }
+          },
+          []
+        );
+
         const effectiveCourseUrl = useMemo(() => {
           if (customCourseUrl.trim().length > 0) {
             return customCourseUrl.trim();
@@ -330,23 +361,6 @@
         }, [selectedCourse, customCourseUrl]);
 
         useEffect(() => {
-          const loadCourses = async () => {
-            setLoadingCourses(true);
-            try {
-              const response = await fetch(`${API_BASE}/api/courses`);
-              if (!response.ok) {
-                throw new Error(`Fehler beim Laden der Kurse (${response.status})`);
-              }
-              const data = await response.json();
-              setCourses(Array.isArray(data.courses) ? data.courses : []);
-              setCourseError(null);
-            } catch (error) {
-              setCourseError(error.message);
-            } finally {
-              setLoadingCourses(false);
-            }
-          };
-
           const loadStatus = async () => {
             try {
               const response = await fetch(`${API_BASE}/api/status`);
@@ -370,7 +384,27 @@
 
           loadCourses();
           loadStatus();
-        }, []);
+        }, [loadCourses]);
+
+        const handleRefreshCourses = useCallback(() => {
+          loadCourses({ force: true });
+        }, [loadCourses]);
+
+        const courseCountLabel = useMemo(() => {
+          if (courseError) {
+            return 'Fehler';
+          }
+          if (loadingCourses) {
+            return 'Lade Kurse…';
+          }
+          if (courses.length === 0) {
+            return 'Keine Kurse';
+          }
+          if (courses.length === 1) {
+            return '1 Kurs';
+          }
+          return `${courses.length} Kurse`;
+        }, [courseError, courses.length, loadingCourses]);
 
         useEffect(() => {
           let wsInstance = null;
@@ -588,14 +622,42 @@
               <section className="grid gap-8 lg:grid-cols-[2fr,3fr]">
                 <div className="space-y-6">
                   <div className="rounded-3xl border border-white/10 bg-white/5 p-6 shadow-xl backdrop-blur">
-                    <div className="flex items-center justify-between">
+                    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                       <div>
                         <h2 className="text-lg font-semibold text-white">Kurs auswählen</h2>
-                        <p className="text-sm text-slate-300">Automatisch erkannte Kurse aus deiner Konfiguration.</p>
+                        <p className="text-sm text-slate-300">
+                          Der Scraper lädt die Kursliste live aus Moodle, sobald du eine Synchronisation startest.
+                        </p>
                       </div>
-                      <span className="rounded-full bg-brand-500/20 px-3 py-1 text-[11px] font-medium text-brand-100">
-                        {courses.length} Kurse
-                      </span>
+                      <div className="flex items-center gap-2">
+                        <span className="rounded-full bg-brand-500/20 px-3 py-1 text-[11px] font-medium text-brand-100">
+                          {courseCountLabel}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={handleRefreshCourses}
+                          disabled={loadingCourses}
+                          className={`inline-flex items-center gap-2 rounded-full border px-3 py-1 text-[11px] font-medium transition ${
+                            loadingCourses
+                              ? 'cursor-wait border-white/10 bg-white/5 text-white/40'
+                              : 'border-white/15 bg-slate-900/60 text-white/70 hover:border-brand-400 hover:text-brand-100'
+                          }`}
+                        >
+                          <svg
+                            xmlns="http://www.w3.org/2000/svg"
+                            viewBox="0 0 20 20"
+                            fill="currentColor"
+                            className="h-3.5 w-3.5"
+                          >
+                            <path
+                              fillRule="evenodd"
+                              d="M10 3a7 7 0 1 0 4.95 11.95.75.75 0 1 0-1.06-1.06A5.5 5.5 0 1 1 15.5 10H14a.75.75 0 0 0 0 1.5h2.25A.75.75 0 0 0 17 10.75V8a.75.75 0 0 0-1.5 0v1.19A7 7 0 0 0 10 3Z"
+                              clipRule="evenodd"
+                            />
+                          </svg>
+                          Aktualisieren
+                        </button>
+                      </div>
                     </div>
                     <div className="mt-5">
                       <label className="group relative block">
@@ -631,6 +693,10 @@
                       ) : courseError ? (
                         <div className="rounded-2xl border border-rose-500/40 bg-rose-500/20 p-4 text-xs text-rose-100">
                           {courseError}
+                        </div>
+                      ) : courses.length === 0 ? (
+                        <div className="rounded-2xl border border-dashed border-white/10 bg-white/5 p-6 text-center text-sm text-slate-300">
+                          Es wurden keine Kurse aus Moodle gemeldet. Starte den Downloader oder nutze die manuelle URL.
                         </div>
                       ) : filteredCourses.length === 0 ? (
                         <div className="rounded-2xl border border-dashed border-white/10 bg-white/5 p-6 text-center text-sm text-slate-300">

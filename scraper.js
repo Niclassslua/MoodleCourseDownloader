@@ -35,7 +35,8 @@ const argv = yargs(hideBin(process.argv))
         },
         enableNotifications: { type: 'boolean', default: false, describe: 'Benachrichtigungen bei neuen Ressourcen aktivieren' },
         manualDownload: { type: 'boolean', default: false, describe: 'Manuellen Downloadmodus aktivieren' },
-        keepBrowserOpen: { type: 'boolean', default: false, describe: 'Browser nach Abschluss offen halten' }
+        keepBrowserOpen: { type: 'boolean', default: false, describe: 'Browser nach Abschluss offen halten' },
+        listCourses: { type: 'boolean', default: false, describe: 'Ermittelt verfügbare Kurse und gibt sie als JSON aus' }
     })
     .help()
     .alias('help', 'h')
@@ -57,12 +58,24 @@ options.setUserPreferences({
 
 (async function main() {
     let driver;
+    const listCoursesMode = argv.listCourses;
+
+    if (listCoursesMode) {
+        process.env.MCD_SILENT_LOGS = '1';
+    }
 
     try {
         driver = await new Builder()
             .forBrowser('chrome')
             .setChromeOptions(options)
             .build();
+
+        if (listCoursesMode) {
+            await loginToMoodle(driver, MOODLE_LOGIN_URL, MOODLE_USERNAME, MOODLE_PASSWORD, MOODLE_URL);
+            const courses = await listAvailableCourses(driver);
+            console.log(JSON.stringify({ courses }, null, 2));
+            return;
+        }
 
         if (argv.manualDownload && argv.courseUrl) {
             await downloadSingleCourse(driver, argv.courseUrl, argv.outputDir, argv.downloadMode);
