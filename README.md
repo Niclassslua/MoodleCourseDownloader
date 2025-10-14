@@ -54,6 +54,27 @@ Execute the scraper with the following command:
 node scraper.js
 ```
 
+### Steuerung über das Web-Dashboard
+
+Das React/Tailwind-Dashboard ist nun direkt mit dem Node.js-Scraper verdrahtet. Eine schlanke Python-Bridge (nur Standardbibliothek) startet den CLI-Prozess, streamt die Konsolen-Logs via Server-Sent Events und stellt REST-Endpunkte für Kurs- und Statusabfragen bereit.
+
+1. Starte zuerst die API-Schicht:
+
+   ```sh
+   python server.py
+   ```
+
+2. Serviere anschließend die statische Weboberfläche (z. B. über einen simplen Python-Server):
+
+   ```sh
+   cd webui
+   python -m http.server 4173
+   ```
+
+3. Öffne [http://localhost:4173](http://localhost:4173). Wähle dort einen Kurs aus, passe die Download-Optionen an und starte die Synchronisation. Der „Live-Protokoll“-Stream zeigt alle Meldungen des Node-Scrapers in Echtzeit an.
+
+> Hinweis: Der Endpunkt `/api/courses` liest Kurse aus einer optionalen `courses.json` im Projektwurzelverzeichnis oder nutzt `COURSE_URL` aus der `.env`, falls vorhanden.
+
 ### What the Script Does
 
 1. **Initialization**: Sets up Selenium WebDriver with ChromeDriver, configuring it to download files to a temporary directory.

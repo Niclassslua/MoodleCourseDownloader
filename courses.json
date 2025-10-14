@@ -1,0 +1,20 @@
+[
+  {
+    "id": "ai101",
+    "title": "AI in Digital Education",
+    "description": "Projektkurs mit praxisnahen Automatisierungen und Prompting-Labs.",
+    "url": "https://moodle.example.com/course/view.php?id=101"
+  },
+  {
+    "id": "ux201",
+    "title": "UX Research Masterclass",
+    "description": "Live-Sessions, Templates und Dokumentationen.",
+    "url": "https://moodle.example.com/course/view.php?id=201"
+  },
+  {
+    "id": "code301",
+    "title": "Fullstack Engineering Bootcamp",
+    "description": "Coding-Challenges, Reviews und Bonusmaterial.",
+    "url": "https://moodle.example.com/course/view.php?id=301"
+  }
+]
