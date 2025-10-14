@@ -1,0 +1,758 @@
+<!doctype html>
+<html lang="de" class="scroll-smooth">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Moodle Course Downloader</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      :root {
+        color-scheme: dark;
+      }
+
+      body {
+        font-family: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      }
+
+      .bg-mesh-gradient {
+        background-image: radial-gradient(circle at 20% 20%, rgba(91, 141, 239, 0.22), transparent 45%),
+          radial-gradient(circle at 80% 10%, rgba(56, 189, 248, 0.18), transparent 40%),
+          radial-gradient(circle at 0% 80%, rgba(34, 197, 94, 0.14), transparent 40%),
+          radial-gradient(circle at 80% 80%, rgba(168, 85, 247, 0.16), transparent 45%),
+          linear-gradient(160deg, rgba(15, 23, 42, 0.96), rgba(2, 6, 23, 0.96));
+        background-blend-mode: screen;
+      }
+
+      .no-scrollbar::-webkit-scrollbar {
+        display: none;
+      }
+
+      .no-scrollbar {
+        -ms-overflow-style: none;
+        scrollbar-width: none;
+      }
+    </style>
+    <script>
+      window.tailwind = window.tailwind ?? {};
+      window.tailwind.config = {
+        theme: {
+          extend: {
+            colors: {
+              brand: {
+                100: '#d9e4ff',
+                200: '#b6c9ff',
+                300: '#93aeff',
+                400: '#6d8df6',
+                500: '#5b8def',
+                600: '#4b75d6',
+                700: '#3f63b8',
+              },
+            },
+            boxShadow: {
+              glow: '0 20px 60px rgba(91, 141, 239, 0.25)',
+            },
+          },
+        },
+      };
+    </script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  </head>
+  <body class="bg-slate-950 text-slate-100">
+    <div id="root"></div>
+    <script type="text/babel">
+      const { useCallback, useEffect, useMemo, useRef, useState } = React;
+
+      const resolveApiBase = () => {
+        if (window.API_BASE) {
+          return window.API_BASE.replace(/\/$/, '');
+        }
+        const { protocol, hostname, port } = window.location;
+        if (!hostname) {
+          return 'http://localhost:8000';
+        }
+        const portSegment = port ? `:${port}` : '';
+        return `${protocol}//${hostname}${portSegment}`;
+      };
+
+      const deriveWebSocketUrl = (base) => {
+        try {
+          const url = new URL(base);
+          url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+          url.pathname = '/ws/logs';
+          url.search = '';
+          url.hash = '';
+          return url.toString();
+        } catch (error) {
+          const secure = window.location.protocol === 'https:';
+          return `${secure ? 'wss' : 'ws'}://${window.location.hostname}:8000/ws/logs`;
+        }
+      };
+
+      const API_BASE = resolveApiBase();
+      const WS_URL = deriveWebSocketUrl(API_BASE);
+      const STREAM_URL = `${API_BASE}/api/stream`;
+
+      const statusStyles = {
+        idle: 'bg-white/10 text-slate-200 border-white/10',
+        starting: 'bg-amber-500/20 text-amber-200 border-amber-400/30',
+        running: 'bg-emerald-500/25 text-emerald-100 border-emerald-400/40',
+        finished: 'bg-sky-500/25 text-sky-100 border-sky-400/40',
+        error: 'bg-rose-500/25 text-rose-100 border-rose-400/40',
+      };
+
+      const StatusBadge = ({ status }) => {
+        const style = statusStyles[status] ?? statusStyles.idle;
+        const labelMap = {
+          idle: 'Bereit',
+          starting: 'Initialisiere',
+          running: 'Aktiv',
+          finished: 'Abgeschlossen',
+          error: 'Fehler',
+        };
+        return (
+          <span
+            className={`inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs font-semibold uppercase tracking-wide ${style}`}
+          >
+            <span className="h-2 w-2 rounded-full bg-current"></span>
+            {labelMap[status] ?? status}
+          </span>
+        );
+      };
+
+      const CourseCard = ({ course, active, onSelect }) => (
+        <button
+          type="button"
+          onClick={() => onSelect(course)}
+          className={`flex w-full flex-col items-start gap-2 rounded-2xl border px-5 py-4 text-left transition ${
+            active
+              ? 'border-brand-500/60 bg-brand-500/20 shadow-[0_14px_30px_rgba(91,141,239,0.25)]'
+              : 'border-white/5 bg-slate-900/50 hover:border-white/15 hover:bg-slate-900/70'
+          }`}
+        >
+          <div className="flex w-full items-center justify-between gap-4">
+            <div>
+              <h3 className="text-base font-semibold text-white">{course.title ?? 'Unbenannter Kurs'}</h3>
+              <p className="text-xs text-slate-300">{course.description ?? course.url}</p>
+            </div>
+            <span className="rounded-full bg-white/10 px-3 py-1 text-[11px] font-medium text-white/80">
+              ID&nbsp;{course.id ?? '–'}
+            </span>
+          </div>
+          <code className="text-[11px] text-brand-200/80">{course.url}</code>
+        </button>
+      );
+
+      const Toggle = ({ label, description, value, onChange }) => (
+        <button
+          type="button"
+          onClick={() => onChange(!value)}
+          className={`group w-full rounded-2xl border px-5 py-4 text-left transition ${
+            value
+              ? 'border-emerald-400/60 bg-emerald-500/20 shadow-[0_14px_30px_rgba(16,185,129,0.3)]'
+              : 'border-white/5 bg-slate-900/60 hover:border-white/15 hover:bg-slate-900/70'
+          }`}
+        >
+          <div className="flex items-center justify-between gap-4">
+            <div>
+              <h3 className="text-sm font-semibold text-white">{label}</h3>
+              <p className="text-xs text-slate-300">{description}</p>
+            </div>
+            <span
+              className={`flex h-6 w-11 items-center rounded-full border px-1 transition ${
+                value ? 'border-emerald-400 bg-emerald-500/30' : 'border-white/10 bg-white/5'
+              }`}
+            >
+              <span
+                className={`h-4 w-4 rounded-full bg-white transition ${value ? 'translate-x-5 bg-emerald-100' : ''}`}
+              ></span>
+            </span>
+          </div>
+        </button>
+      );
+
+      const LogItem = ({ entry }) => {
+        const isError = entry.stream === 'stderr';
+        return (
+          <div
+            className={`rounded-xl border px-3 py-2 text-xs leading-relaxed transition ${
+              isError ? 'border-rose-500/40 bg-rose-500/15 text-rose-100' : 'border-white/5 bg-white/5 text-slate-200'
+            }`}
+          >
+            <div className="mb-1 flex items-center justify-between gap-3 text-[10px] uppercase tracking-wide text-white/60">
+              <span className={isError ? 'text-rose-200' : 'text-brand-200'}>{isError ? 'Fehler' : 'Info'}</span>
+              <span className="text-white/40">
+                {entry.time ? new Date(entry.time).toLocaleTimeString() : new Date().toLocaleTimeString()}
+              </span>
+            </div>
+            <p className="font-medium text-white/90 whitespace-pre-wrap">{entry.message}</p>
+          </div>
+        );
+      };
+
+      const LogPanel = ({ logs }) => (
+        <div className="rounded-3xl border border-white/10 bg-slate-950/70 p-6 shadow-xl backdrop-blur">
+          <div className="flex items-center justify-between">
+            <div>
+              <h2 className="text-lg font-semibold text-white">Live-Protokoll</h2>
+              <p className="text-sm text-slate-300">Alle Konsolenmeldungen des Node-Scrapers in Echtzeit.</p>
+            </div>
+            <span className="rounded-full bg-white/10 px-3 py-1 text-[11px] font-medium text-white/70">
+              {logs.length} Einträge
+            </span>
+          </div>
+          <div className="no-scrollbar mt-5 flex max-h-[360px] flex-col gap-3 overflow-y-auto pr-1">
+            {logs.length === 0 ? (
+              <div className="rounded-2xl border border-dashed border-white/10 bg-white/5 p-6 text-center text-sm text-slate-300">
+                Noch keine Meldungen – starte den Downloader, um die Ausgabe zu verfolgen.
+              </div>
+            ) : (
+              logs.map((entry, idx) => <LogItem key={`${entry.time}-${idx}`} entry={entry} />)
+            )}
+          </div>
+        </div>
+      );
+
+      const downloadModes = [
+        { id: 'all', title: 'Alles', description: 'Vollständige Synchronisation sämtlicher Ressourcen.' },
+        { id: 'resources-only', title: 'Materialien', description: 'Nur Dateien, Dokumente & statische Inhalte.' },
+        { id: 'forums-only', title: 'Foren', description: 'Diskussionen und Forenbeiträge sichern.' },
+        { id: 'quizzes-only', title: 'Tests', description: 'Quiz-Inhalte exportieren.' },
+      ];
+
+      const OptionsPanel = ({ downloadMode, setDownloadMode, options, setOptions, outputDir, setOutputDir, maxConcurrentDownloads, setMaxConcurrentDownloads }) => (
+        <div className="rounded-3xl border border-white/10 bg-white/5 p-6 shadow-xl backdrop-blur">
+          <div className="mb-6 flex items-center justify-between gap-4">
+            <div>
+              <h2 className="text-lg font-semibold text-white">Downloader-Konfiguration</h2>
+              <p className="text-sm text-slate-300">Welche Inhalte sollen wie verarbeitet werden?</p>
+            </div>
+          </div>
+          <div className="grid gap-4 sm:grid-cols-2">
+            {downloadModes.map((mode) => (
+              <button
+                key={mode.id}
+                type="button"
+                onClick={() => setDownloadMode(mode.id)}
+                className={`flex flex-col items-start gap-2 rounded-2xl border px-4 py-3 text-left transition ${
+                  downloadMode === mode.id
+                    ? 'border-brand-500/60 bg-brand-500/20 shadow-[0_14px_30px_rgba(91,141,239,0.25)]'
+                    : 'border-white/5 bg-slate-900/60 hover:border-white/15 hover:bg-slate-900/70'
+                }`}
+              >
+                <span className="text-sm font-semibold text-white">{mode.title}</span>
+                <span className="text-xs text-slate-300">{mode.description}</span>
+              </button>
+            ))}
+          </div>
+
+          <div className="mt-6 grid gap-4 lg:grid-cols-3">
+            <div className="lg:col-span-2">
+              <label className="text-xs font-semibold uppercase tracking-wide text-white/60">Zielverzeichnis</label>
+              <input
+                type="text"
+                value={outputDir}
+                onChange={(event) => setOutputDir(event.target.value)}
+                className="mt-2 w-full rounded-2xl border border-white/10 bg-slate-900/70 px-4 py-3 text-sm text-white outline-none transition focus:border-brand-400 focus:ring-2 focus:ring-brand-500/40"
+                placeholder="./downloads"
+              />
+            </div>
+            <div>
+              <label className="text-xs font-semibold uppercase tracking-wide text-white/60">Parallelität</label>
+              <input
+                type="number"
+                min="1"
+                max="10"
+                value={maxConcurrentDownloads}
+                onChange={(event) => setMaxConcurrentDownloads(Number(event.target.value))}
+                className="mt-2 w-full rounded-2xl border border-white/10 bg-slate-900/70 px-4 py-3 text-sm text-white outline-none transition focus:border-brand-400 focus:ring-2 focus:ring-brand-500/40"
+              />
+            </div>
+          </div>
+
+          <div className="mt-6 grid gap-3 sm:grid-cols-3">
+            <Toggle
+              label="Desktop-Notifications"
+              description="Benachrichtige mich bei neuen Dateien."
+              value={options.enableNotifications}
+              onChange={(value) => setOptions((prev) => ({ ...prev, enableNotifications: value }))}
+            />
+            <Toggle
+              label="Browser offen lassen"
+              description="Selenium-Instanz nicht automatisch beenden."
+              value={options.keepBrowserOpen}
+              onChange={(value) => setOptions((prev) => ({ ...prev, keepBrowserOpen: value }))}
+            />
+            <Toggle
+              label="Interaktive Kurswahl"
+              description="CLI übernimmt die Kursauswahl."
+              value={options.manualDownload}
+              onChange={(value) => setOptions((prev) => ({ ...prev, manualDownload: value }))}
+            />
+          </div>
+        </div>
+      );
+
+      const Dashboard = () => {
+        const [courses, setCourses] = useState([]);
+        const [loadingCourses, setLoadingCourses] = useState(true);
+        const [courseError, setCourseError] = useState(null);
+        const [selectedCourse, setSelectedCourse] = useState(null);
+        const [customCourseUrl, setCustomCourseUrl] = useState('');
+        const [searchTerm, setSearchTerm] = useState('');
+        const [logs, setLogs] = useState([]);
+        const [status, setStatus] = useState('idle');
+        const [options, setOptions] = useState({
+          enableNotifications: false,
+          keepBrowserOpen: false,
+          manualDownload: false,
+        });
+        const [downloadMode, setDownloadMode] = useState('all');
+        const [outputDir, setOutputDir] = useState('./downloads');
+        const [maxConcurrentDownloads, setMaxConcurrentDownloads] = useState(3);
+        const [apiError, setApiError] = useState(null);
+        const [starting, setStarting] = useState(false);
+        const [wsConnected, setWsConnected] = useState(false);
+
+        const logsRef = useRef([]);
+        const seenLogsRef = useRef(new Set());
+        const sseRef = useRef(null);
+
+        const loadCourses = useCallback(
+          async ({ force = false } = {}) => {
+            setLoadingCourses(true);
+            try {
+              const endpoint = force ? `${API_BASE}/api/courses?refresh=1` : `${API_BASE}/api/courses`;
+              const response = await fetch(endpoint);
+              if (!response.ok) {
+                throw new Error(`Fehler beim Laden der Kurse (${response.status})`);
+              }
+              const data = await response.json();
+              const incoming = Array.isArray(data.courses) ? data.courses : [];
+              setCourses(incoming);
+              setSelectedCourse((prev) => {
+                if (!prev) {
+                  return null;
+                }
+                return incoming.find((course) => course.url === prev.url) ?? null;
+              });
+              setCourseError(null);
+            } catch (error) {
+              setCourseError(error.message);
+            } finally {
+              setLoadingCourses(false);
+            }
+          },
+          []
+        );
+
+        const effectiveCourseUrl = useMemo(() => {
+          if (customCourseUrl.trim().length > 0) {
+            return customCourseUrl.trim();
+          }
+          return selectedCourse?.url ?? '';
+        }, [selectedCourse, customCourseUrl]);
+
+        useEffect(() => {
+          const loadStatus = async () => {
+            try {
+              const response = await fetch(`${API_BASE}/api/status`);
+              if (!response.ok) {
+                throw new Error('Status konnte nicht geladen werden.');
+              }
+              const data = await response.json();
+              setStatus(data.status ?? 'idle');
+              if (Array.isArray(data.log)) {
+                const prepared = data.log.map((entry) => ({ ...entry, time: entry.time ?? Date.now() }));
+                logsRef.current = prepared;
+                seenLogsRef.current = new Set(
+                  prepared.map((entry) => `${entry.time}|${entry.stream}|${entry.message}`)
+                );
+                setLogs(prepared);
+              }
+            } catch (error) {
+              console.warn('Status konnte nicht abgefragt werden:', error);
+            }
+          };
+
+          loadCourses();
+          loadStatus();
+        }, [loadCourses]);
+
+        const handleRefreshCourses = useCallback(() => {
+          loadCourses({ force: true });
+        }, [loadCourses]);
+
+        const courseCountLabel = useMemo(() => {
+          if (courseError) {
+            return 'Fehler';
+          }
+          if (loadingCourses) {
+            return 'Lade Kurse…';
+          }
+          if (courses.length === 0) {
+            return 'Keine Kurse';
+          }
+          if (courses.length === 1) {
+            return '1 Kurs';
+          }
+          return `${courses.length} Kurse`;
+        }, [courseError, courses.length, loadingCourses]);
+
+        useEffect(() => {
+          let wsInstance = null;
+          let wsOpened = false;
+
+          const registerLogEntry = (entry) => {
+            const key = `${entry.time}|${entry.stream}|${entry.message}`;
+            if (seenLogsRef.current.has(key)) {
+              return;
+            }
+            seenLogsRef.current.add(key);
+            logsRef.current = [...logsRef.current.slice(-199), entry];
+            setLogs(logsRef.current);
+          };
+
+          const handlePayload = (payload) => {
+            if (!payload) return;
+            if (payload.type === 'log') {
+              const entry = { ...payload, time: payload.time ?? Date.now() };
+              registerLogEntry(entry);
+            } else if (payload.type === 'status' && payload.status) {
+              setStatus(payload.status);
+            }
+          };
+
+          const connectSse = () => {
+            if (!('EventSource' in window) || sseRef.current) {
+              return;
+            }
+            const source = new EventSource(STREAM_URL);
+            sseRef.current = source;
+            source.onopen = () => setWsConnected(true);
+            source.onerror = () => setWsConnected(false);
+            const onEvent = (event) => {
+              try {
+                handlePayload(JSON.parse(event.data));
+              } catch (error) {
+                console.error('Fehler beim Verarbeiten des SSE-Events', error);
+              }
+            };
+            source.addEventListener('log', onEvent);
+            source.addEventListener('status', onEvent);
+            source.onmessage = onEvent;
+          };
+
+          const connectWs = () => {
+            if (!('WebSocket' in window)) {
+              connectSse();
+              return;
+            }
+            wsInstance = new WebSocket(WS_URL);
+            wsInstance.onopen = () => {
+              wsOpened = true;
+              setWsConnected(true);
+            };
+            wsInstance.onclose = () => {
+              setWsConnected(false);
+              if (!wsOpened) {
+                connectSse();
+              } else {
+                connectSse();
+              }
+              wsInstance = null;
+            };
+            wsInstance.onerror = () => {
+              setWsConnected(false);
+              if (!wsOpened) {
+                connectSse();
+              }
+            };
+            wsInstance.onmessage = (event) => {
+              try {
+                handlePayload(JSON.parse(event.data));
+              } catch (error) {
+                console.error('Fehler beim Verarbeiten der WS-Nachricht', error);
+              }
+            };
+          };
+
+          connectWs();
+
+          return () => {
+            if (wsInstance) {
+              try {
+                wsInstance.close();
+              } catch (error) {
+                console.warn('WS konnte nicht geschlossen werden', error);
+              }
+              wsInstance = null;
+            }
+            if (sseRef.current) {
+              sseRef.current.close();
+              sseRef.current = null;
+            }
+          };
+        }, []);
+
+        const filteredCourses = useMemo(() => {
+          if (!searchTerm) return courses;
+          return courses.filter((course) =>
+            [course.title, course.description, course.url]
+              .filter(Boolean)
+              .some((value) => value.toLowerCase().includes(searchTerm.toLowerCase()))
+          );
+        }, [courses, searchTerm]);
+
+        const handleRun = async () => {
+          setApiError(null);
+          setStarting(true);
+          try {
+            const payload = {
+              courseUrl: effectiveCourseUrl || undefined,
+              downloadMode,
+              outputDir,
+              maxConcurrentDownloads,
+              enableNotifications: options.enableNotifications,
+              keepBrowserOpen: options.keepBrowserOpen,
+              manualDownload: options.manualDownload,
+            };
+
+            if (!payload.manualDownload && !payload.courseUrl) {
+              throw new Error('Bitte einen Kurs auswählen oder eine URL eintragen.');
+            }
+
+            const response = await fetch(`${API_BASE}/api/run`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(payload),
+            });
+            if (!response.ok) {
+              const text = await response.text();
+              throw new Error(text || 'Scraper konnte nicht gestartet werden.');
+            }
+          } catch (error) {
+            setApiError(error.message);
+          } finally {
+            setStarting(false);
+          }
+        };
+
+        return (
+          <div className="bg-mesh-gradient min-h-screen">
+            <main className="mx-auto flex max-w-6xl flex-col gap-10 px-6 py-12 lg:px-12">
+              <header className="rounded-3xl border border-white/10 bg-white/5 px-8 py-10 shadow-glow backdrop-blur">
+                <div className="flex flex-col gap-6 lg:flex-row lg:items-center lg:justify-between">
+                  <div className="max-w-2xl space-y-4">
+                    <div className="flex items-center gap-3">
+                      <StatusBadge status={status} />
+                      <span
+                        className={`inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs font-semibold uppercase tracking-wide ${
+                          wsConnected
+                            ? 'border-emerald-400/40 bg-emerald-500/20 text-emerald-100'
+                            : 'border-rose-400/40 bg-rose-500/20 text-rose-100'
+                        }`}
+                      >
+                        <span className="h-2 w-2 rounded-full bg-current"></span>
+                        {wsConnected ? 'Live-Stream aktiv' : 'Keine Streaming-Verbindung'}
+                      </span>
+                    </div>
+                    <h1 className="text-3xl font-bold text-white sm:text-4xl">
+                      Moodle Downloader – orchestriert über das Realtime Control Center
+                    </h1>
+                      <p className="text-sm text-slate-300 sm:text-base">
+                        Steuere die Node.js CLI direkt aus dem Browser, starte Synchronisationen mit einem Klick und verfolge jede
+                        Logzeile live. Die Python-Bridge kapselt den Scraper-Prozess und streamt Statusupdates über Server-Sent Events an
+                        dieses Dashboard.
+                      </p>
+                  </div>
+                  <div className="flex flex-col items-end gap-4">
+                    <button
+                      type="button"
+                      onClick={handleRun}
+                      disabled={status === 'starting' || status === 'running' || starting}
+                      className={`group inline-flex items-center gap-3 rounded-full px-6 py-3 text-sm font-semibold transition ${
+                        status === 'starting' || status === 'running' || starting
+                          ? 'cursor-not-allowed border-white/10 bg-white/10 text-white/50'
+                          : 'border border-brand-500/70 bg-brand-500/20 text-brand-100 hover:border-brand-400 hover:bg-brand-500/30'
+                      }`}
+                    >
+                      <span className="flex h-8 w-8 items-center justify-center rounded-full border border-white/10 bg-white/10">
+                        <svg
+                          xmlns="http://www.w3.org/2000/svg"
+                          viewBox="0 0 20 20"
+                          fill="currentColor"
+                          className="h-4 w-4"
+                        >
+                          <path d="M4.75 3.5A.75.75 0 0 1 5.5 2.75h1.063c.287 0 .52.233.52.52v13.46a.52.52 0 0 1-.52.52H5.5a.75.75 0 0 1-.75-.75V3.5ZM8.5 3.27c0-.287.233-.52.52-.52h.822c.08 0 .16.02.232.056l6.278 3.204c.177.09.288.272.288.472v6.036a.53.53 0 0 1-.288.472l-6.278 3.204a.52.52 0 0 1-.232.056H9.02a.52.52 0 0 1-.52-.52V3.27Z" />
+                        </svg>
+                      </span>
+                      Downloader starten
+                    </button>
+                    <div className="rounded-2xl border border-white/10 bg-white/5 px-4 py-2 text-xs text-white/70">
+                      <p className="font-semibold">Aktueller Status</p>
+                      <p className="text-white/60">
+                        {status === 'running'
+                          ? 'Synchronisation aktiv – siehe Log unten.'
+                          : status === 'starting'
+                          ? 'Starte Selenium & bereite Downloads vor.'
+                          : status === 'finished'
+                          ? 'Letzter Lauf abgeschlossen.'
+                          : status === 'error'
+                          ? 'Fehler – Details im Log.'
+                          : 'Bereit, wenn du es bist.'}
+                      </p>
+                    </div>
+                    {apiError && (
+                      <div className="max-w-xs rounded-2xl border border-rose-500/40 bg-rose-500/20 px-4 py-2 text-xs text-rose-100">
+                        {apiError}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </header>
+
+              <section className="grid gap-8 lg:grid-cols-[2fr,3fr]">
+                <div className="space-y-6">
+                  <div className="rounded-3xl border border-white/10 bg-white/5 p-6 shadow-xl backdrop-blur">
+                    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                      <div>
+                        <h2 className="text-lg font-semibold text-white">Kurs auswählen</h2>
+                        <p className="text-sm text-slate-300">
+                          Der Scraper lädt die Kursliste live aus Moodle, sobald du eine Synchronisation startest.
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className="rounded-full bg-brand-500/20 px-3 py-1 text-[11px] font-medium text-brand-100">
+                          {courseCountLabel}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={handleRefreshCourses}
+                          disabled={loadingCourses}
+                          className={`inline-flex items-center gap-2 rounded-full border px-3 py-1 text-[11px] font-medium transition ${
+                            loadingCourses
+                              ? 'cursor-wait border-white/10 bg-white/5 text-white/40'
+                              : 'border-white/15 bg-slate-900/60 text-white/70 hover:border-brand-400 hover:text-brand-100'
+                          }`}
+                        >
+                          <svg
+                            xmlns="http://www.w3.org/2000/svg"
+                            viewBox="0 0 20 20"
+                            fill="currentColor"
+                            className="h-3.5 w-3.5"
+                          >
+                            <path
+                              fillRule="evenodd"
+                              d="M10 3a7 7 0 1 0 4.95 11.95.75.75 0 1 0-1.06-1.06A5.5 5.5 0 1 1 15.5 10H14a.75.75 0 0 0 0 1.5h2.25A.75.75 0 0 0 17 10.75V8a.75.75 0 0 0-1.5 0v1.19A7 7 0 0 0 10 3Z"
+                              clipRule="evenodd"
+                            />
+                          </svg>
+                          Aktualisieren
+                        </button>
+                      </div>
+                    </div>
+                    <div className="mt-5">
+                      <label className="group relative block">
+                        <span className="absolute inset-y-0 left-3 flex items-center text-white/40">
+                          <svg
+                            xmlns="http://www.w3.org/2000/svg"
+                            viewBox="0 0 20 20"
+                            fill="currentColor"
+                            className="h-4 w-4"
+                          >
+                            <path
+                              fillRule="evenodd"
+                              d="M9 3.5a5.5 5.5 0 1 0 3.478 9.799l3.611 3.612a.75.75 0 1 0 1.06-1.06l-3.611-3.612A5.5 5.5 0 0 0 9 3.5ZM5 9a4 4 0 1 1 7.37 2.232.75.75 0 0 0-.124.124A4 4 0 0 1 5 9Z"
+                              clipRule="evenodd"
+                            />
+                          </svg>
+                        </span>
+                        <input
+                          type="text"
+                          value={searchTerm}
+                          onChange={(event) => setSearchTerm(event.target.value)}
+                          placeholder="Kurse filtern"
+                          className="w-full rounded-2xl border border-white/10 bg-slate-900/60 px-9 py-3 text-sm text-white outline-none transition focus:border-brand-400 focus:ring-2 focus:ring-brand-500/40"
+                        />
+                      </label>
+                    </div>
+
+                    <div className="mt-5 flex flex-col gap-3">
+                      {loadingCourses ? (
+                        <div className="rounded-2xl border border-dashed border-white/10 bg-white/5 p-6 text-center text-sm text-slate-300">
+                          Lade Kurse...
+                        </div>
+                      ) : courseError ? (
+                        <div className="rounded-2xl border border-rose-500/40 bg-rose-500/20 p-4 text-xs text-rose-100">
+                          {courseError}
+                        </div>
+                      ) : courses.length === 0 ? (
+                        <div className="rounded-2xl border border-dashed border-white/10 bg-white/5 p-6 text-center text-sm text-slate-300">
+                          Es wurden keine Kurse aus Moodle gemeldet. Starte den Downloader oder nutze die manuelle URL.
+                        </div>
+                      ) : filteredCourses.length === 0 ? (
+                        <div className="rounded-2xl border border-dashed border-white/10 bg-white/5 p-6 text-center text-sm text-slate-300">
+                          Kein Kurs entspricht deiner Suche.
+                        </div>
+                      ) : (
+                        filteredCourses.map((course) => (
+                          <CourseCard
+                            key={course.id ?? course.url}
+                            course={course}
+                            active={selectedCourse?.url === course.url}
+                            onSelect={setSelectedCourse}
+                          />
+                        ))
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="rounded-3xl border border-white/10 bg-white/5 p-6 shadow-xl backdrop-blur">
+                    <h3 className="text-sm font-semibold text-white">Manuelle Kurs-URL</h3>
+                    <p className="text-xs text-slate-300">
+                      Falls dein gewünschter Kurs nicht gelistet ist, gib hier die vollständige Moodle-URL ein.
+                    </p>
+                    <input
+                      type="url"
+                      value={customCourseUrl}
+                      onChange={(event) => setCustomCourseUrl(event.target.value)}
+                      placeholder="https://moodle.example.com/course/view.php?id=1234"
+                      className="mt-3 w-full rounded-2xl border border-white/10 bg-slate-900/60 px-4 py-3 text-sm text-white outline-none transition focus:border-brand-400 focus:ring-2 focus:ring-brand-500/40"
+                    />
+                    <p className="mt-2 text-[11px] text-white/40">
+                      Bevorzugt wird die Auswahl aus der Liste. Die manuelle URL überschreibt jedoch die Auswahl.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="space-y-6">
+                  <OptionsPanel
+                    downloadMode={downloadMode}
+                    setDownloadMode={setDownloadMode}
+                    options={options}
+                    setOptions={setOptions}
+                    outputDir={outputDir}
+                    setOutputDir={setOutputDir}
+                    maxConcurrentDownloads={maxConcurrentDownloads}
+                    setMaxConcurrentDownloads={setMaxConcurrentDownloads}
+                  />
+                  <LogPanel logs={logs} />
+                </div>
+              </section>
+            </main>
+          </div>
+        );
+      };
+
+      ReactDOM.createRoot(document.getElementById('root')).render(<Dashboard />);
+    </script>
+  </body>
+</html>

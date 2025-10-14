@@ -5,6 +5,8 @@ const path = require('path');
 const fs = require('fs');
 const yargs = require('yargs/yargs');
 const { hideBin } = require('yargs/helpers');
+const { spawn } = require('child_process');
+const http = require('http');
 const { log } = require('./utils/logger');
 const { createDirectories, sanitizeFilename } = require('./utils/directories');
 const { loginToMoodle, getCourseTitle, enumerateDownloads, listAvailableCourses } = require('./utils/moodle');
@@ -35,7 +37,12 @@ const argv = yargs(hideBin(process.argv))
         },
         enableNotifications: { type: 'boolean', default: false, describe: 'Benachrichtigungen bei neuen Ressourcen aktivieren' },
         manualDownload: { type: 'boolean', default: false, describe: 'Manuellen Downloadmodus aktivieren' },
-        keepBrowserOpen: { type: 'boolean', default: false, describe: 'Browser nach Abschluss offen halten' }
+        keepBrowserOpen: { type: 'boolean', default: false, describe: 'Browser nach Abschluss offen halten' },
+        listCourses: { type: 'boolean', default: false, describe: 'Ermittelt verfügbare Kurse und gibt sie als JSON aus' },
+        startServer: { type: 'boolean', default: false, describe: 'Startet die Python-Bridge samt Dashboard und wartet auf deren Beendigung' },
+        serverPort: { type: 'number', describe: 'Port für die Dashboard-Bridge (nur mit --startServer)' },
+        serverHost: { type: 'string', describe: 'Host/IP für die Dashboard-Bridge (nur mit --startServer)' },
+        openDashboard: { type: 'boolean', default: true, describe: 'Öffnet das Dashboard im Browser, wenn --startServer gesetzt ist' }
     })
     .help()
     .alias('help', 'h')
@@ -56,13 +63,35 @@ options.setUserPreferences({
 });
 
 (async function main() {
+    if (argv.startServer) {
+        try {
+            await runDashboardBridge(argv);
+        } catch (err) {
+            console.error(err && err.message ? err.message : err);
+            process.exit(1);
+        }
+        return;
+    }
+
     let driver;
+    const listCoursesMode = argv.listCourses;
+
+    if (listCoursesMode) {
+        process.env.MCD_SILENT_LOGS = '1';
+    }
 
     try {
         driver = await new Builder()
             .forBrowser('chrome')
             .setChromeOptions(options)
             .build();
+
+        if (listCoursesMode) {
+            await loginToMoodle(driver, MOODLE_LOGIN_URL, MOODLE_USERNAME, MOODLE_PASSWORD, MOODLE_URL);
+            const courses = await listAvailableCourses(driver);
+            console.log(JSON.stringify({ courses }, null, 2));
+            return;
+        }
 
         if (argv.manualDownload && argv.courseUrl) {
             await downloadSingleCourse(driver, argv.courseUrl, argv.outputDir, argv.downloadMode);
@@ -129,6 +158,223 @@ options.setUserPreferences({
         process.exit(0);
     });
 })();
+
+
+async function runDashboardBridge(argv) {
+    const defaultPort = parseInt(process.env.MCD_API_PORT || '8000', 10);
+    const host = argv.serverHost || process.env.MCD_API_HOST || '0.0.0.0';
+    const port = argv.serverPort || defaultPort;
+    const env = { ...process.env, MCD_API_PORT: String(port), MCD_API_HOST: host };
+    const pythonExecutable = resolvePythonExecutable();
+    const serverScript = path.join(__dirname, 'server.py');
+    const displayHost = host === '0.0.0.0' ? '127.0.0.1' : host;
+    const dashboardUrl = `http://${displayHost}:${port}/`;
+
+    await log(`Starte Dashboard-Bridge (${pythonExecutable} ${serverScript}) auf ${host}:${port}`);
+
+    let serverProcess;
+    try {
+        serverProcess = spawn(pythonExecutable, [serverScript], {
+            cwd: __dirname,
+            env,
+            stdio: ['ignore', 'pipe', 'pipe']
+        });
+    } catch (err) {
+        await log(`Dashboard-Bridge konnte nicht gestartet werden: ${err.message || err}`);
+        throw err;
+    }
+
+    pipeBridgeOutput(serverProcess.stdout, 'stdout');
+    pipeBridgeOutput(serverProcess.stderr, 'stderr');
+
+    try {
+        await waitForBridgeReady(displayHost, port, serverProcess);
+    } catch (err) {
+        if (serverProcess && !serverProcess.killed) {
+            serverProcess.kill('SIGINT');
+        }
+        await log(`Dashboard-Bridge antwortet nicht: ${err.message || err}`);
+        throw err;
+    }
+
+    await log(`Dashboard läuft unter ${dashboardUrl}`);
+    console.log(`Dashboard läuft unter ${dashboardUrl}`);
+
+    if (argv.openDashboard) {
+        try {
+            await openDashboardInBrowser(dashboardUrl);
+        } catch (err) {
+            await log(`Dashboard konnte nicht automatisch im Browser geöffnet werden: ${err.message || err}`);
+        }
+    }
+
+    await log('Dashboard-Server aktiv. Drücke Strg+C zum Stoppen.');
+    console.log('Dashboard-Server aktiv. Drücke Strg+C zum Stoppen.');
+
+    const handleSignal = () => {
+        if (serverProcess && !serverProcess.killed) {
+            log('Stoppe Dashboard-Server...');
+            serverProcess.kill('SIGINT');
+        }
+    };
+
+    process.on('SIGINT', handleSignal);
+    process.on('SIGTERM', handleSignal);
+
+    try {
+        await new Promise((resolve, reject) => {
+            serverProcess.on('exit', (code, signal) => {
+                if (signal || code === 0 || code === null) {
+                    resolve();
+                } else {
+                    reject(new Error(`Dashboard-Server wurde mit Code ${code} beendet.`));
+                }
+            });
+            serverProcess.on('error', reject);
+        });
+    } finally {
+        process.removeListener('SIGINT', handleSignal);
+        process.removeListener('SIGTERM', handleSignal);
+    }
+
+    await log('Dashboard-Server wurde beendet.');
+}
+
+
+function resolvePythonExecutable() {
+    if (process.env.MCD_PYTHON) {
+        return process.env.MCD_PYTHON;
+    }
+    if (process.platform === 'win32') {
+        return 'python';
+    }
+    return 'python3';
+}
+
+
+function pipeBridgeOutput(stream, label) {
+    if (!stream) {
+        return;
+    }
+    stream.setEncoding('utf8');
+    stream.on('data', chunk => {
+        const lines = chunk.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+        for (const line of lines) {
+            console.log(`[bridge:${label}] ${line}`);
+        }
+    });
+}
+
+
+function waitForBridgeReady(host, port, serverProcess, timeoutMs = 15000) {
+    return new Promise((resolve, reject) => {
+        const deadline = Date.now() + timeoutMs;
+        let settled = false;
+
+        const onExit = (code, signal) => {
+            if (settled) {
+                return;
+            }
+            settled = true;
+            reject(new Error(`Dashboard-Server beendete sich vorzeitig (code=${code}, signal=${signal || 'none'})`));
+        };
+
+        serverProcess.once('exit', onExit);
+
+        const tryRequest = () => {
+            if (settled) {
+                return;
+            }
+
+            if (Date.now() > deadline) {
+                settled = true;
+                serverProcess.removeListener('exit', onExit);
+                reject(new Error(`Keine Antwort vom Dashboard auf Port ${port}`));
+                return;
+            }
+
+            const req = http.get({ host, port, path: '/api/status', timeout: 2000 }, res => {
+                res.resume();
+                if (settled) {
+                    return;
+                }
+                if (res.statusCode && res.statusCode >= 200 && res.statusCode < 300) {
+                    settled = true;
+                    serverProcess.removeListener('exit', onExit);
+                    resolve();
+                } else {
+                    setTimeout(tryRequest, 500);
+                }
+            });
+
+            req.on('timeout', () => {
+                req.destroy();
+                if (!settled) {
+                    setTimeout(tryRequest, 500);
+                }
+            });
+
+            req.on('error', () => {
+                if (!settled) {
+                    setTimeout(tryRequest, 500);
+                }
+            });
+        };
+
+        tryRequest();
+    });
+}
+
+
+function openDashboardInBrowser(url) {
+    return new Promise((resolve, reject) => {
+        let command;
+        let args;
+
+        if (process.platform === 'darwin') {
+            command = 'open';
+            args = [url];
+        } else if (process.platform === 'win32') {
+            command = 'cmd';
+            args = ['/c', 'start', '', url];
+        } else {
+            command = 'xdg-open';
+            args = [url];
+        }
+
+        let opener;
+        try {
+            opener = spawn(command, args, { stdio: 'ignore', detached: true });
+        } catch (err) {
+            reject(err);
+            return;
+        }
+
+        let settled = false;
+
+        const onSuccess = () => {
+            if (settled) {
+                return;
+            }
+            settled = true;
+            opener.removeListener('error', onError);
+            resolve();
+        };
+
+        const onError = (err) => {
+            if (settled) {
+                return;
+            }
+            settled = true;
+            opener.removeListener('spawn', onSuccess);
+            reject(err);
+        };
+
+        opener.once('spawn', onSuccess);
+        opener.once('error', onError);
+        opener.unref();
+    });
+}
 
 
 async function downloadSingleCourse(driver, courseUrl, outputDir, downloadMode, loggedin) {

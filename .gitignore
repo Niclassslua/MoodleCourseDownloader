@@ -1,0 +1,7 @@
+node_modules/
+.env
+.DS_Store
+webui/dist/
+__pycache__/
+*.pyc
+scraper.log
