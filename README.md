@@ -56,16 +56,24 @@ node scraper.js
 
 ### Steuerung über das Web-Dashboard
 
-Für eine komfortable Bedienung ohne CLI kannst du das neue React/Tailwind-Dashboard direkt aus dem `webui`-Verzeichnis serven. Da alle Abhängigkeiten über CDNs geladen werden, ist kein Build-Schritt notwendig:
+Das React/Tailwind-Dashboard ist nun direkt mit dem Node.js-Scraper verdrahtet. Eine schlanke Python-Bridge (nur Standardbibliothek) startet den CLI-Prozess, streamt die Konsolen-Logs via Server-Sent Events und stellt REST-Endpunkte für Kurs- und Statusabfragen bereit.
 
-```sh
-cd webui
-python -m http.server 4173
-```
+1. Starte zuerst die API-Schicht:
 
-Rufe anschließend [http://localhost:4173](http://localhost:4173) auf. Dort wählst du Kurse aus, aktivierst
-Download-Optionen und beobachtest den Fortschritt in Echtzeit. Die UI simuliert bereits den künftigen Integrationsfluss mit dem
-CLI-Downloader und dient als visuelles Kontrollzentrum.
+   ```sh
+   python server.py
+   ```
+
+2. Serviere anschließend die statische Weboberfläche (z. B. über einen simplen Python-Server):
+
+   ```sh
+   cd webui
+   python -m http.server 4173
+   ```
+
+3. Öffne [http://localhost:4173](http://localhost:4173). Wähle dort einen Kurs aus, passe die Download-Optionen an und starte die Synchronisation. Der „Live-Protokoll“-Stream zeigt alle Meldungen des Node-Scrapers in Echtzeit an.
+
+> Hinweis: Der Endpunkt `/api/courses` liest Kurse aus einer optionalen `courses.json` im Projektwurzelverzeichnis oder nutzt `COURSE_URL` aus der `.env`, falls vorhanden.
 
 ### What the Script Does
 
