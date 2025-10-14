@@ -54,6 +54,19 @@ Execute the scraper with the following command:
 node scraper.js
 ```
 
+### Steuerung über das Web-Dashboard
+
+Für eine komfortable Bedienung ohne CLI kannst du das neue React/Tailwind-Dashboard direkt aus dem `webui`-Verzeichnis serven. Da alle Abhängigkeiten über CDNs geladen werden, ist kein Build-Schritt notwendig:
+
+```sh
+cd webui
+python -m http.server 4173
+```
+
+Rufe anschließend [http://localhost:4173](http://localhost:4173) auf. Dort wählst du Kurse aus, aktivierst
+Download-Optionen und beobachtest den Fortschritt in Echtzeit. Die UI simuliert bereits den künftigen Integrationsfluss mit dem
+CLI-Downloader und dient als visuelles Kontrollzentrum.
+
 ### What the Script Does
 
 1. **Initialization**: Sets up Selenium WebDriver with ChromeDriver, configuring it to download files to a temporary directory.
