@@ -54,7 +54,7 @@ createDirectories([tempDownloadDir]);
 const options = new chrome.Options();
 const CHROME_BINARY="/Applications/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing"
 options.setChromeBinaryPath(CHROME_BINARY);
-options.addArguments('--disable-gpu', '--no-sandbox', '--headless');
+options.addArguments('--disable-gpu', '--no-sandbox');
 options.setUserPreferences({
     'download.default_directory': tempDownloadDir,
     'download.prompt_for_download': false,
