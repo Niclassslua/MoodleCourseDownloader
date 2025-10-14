@@ -120,17 +120,26 @@ options.setUserPreferences({
                 return;
             }
 
-            const { selectedCourseIndex } = await inquirer.prompt([
-                {
-                    type: 'list',
-                    name: 'selectedCourseIndex',
-                    message: 'Wähle einen Kurs aus:',
-                    choices: courses.map((course, i) => ({
-                        name: `${course.title} (ID: ${course.courseId})`,
-                        value: i
-                    }))
+            let selectedCourseIndex;
+            try {
+                ({ selectedCourseIndex } = await inquirer.prompt([
+                    {
+                        type: 'list',
+                        name: 'selectedCourseIndex',
+                        message: 'Wähle einen Kurs aus:',
+                        choices: courses.map((course, i) => ({
+                            name: `${course.title} (ID: ${course.courseId})`,
+                            value: i
+                        }))
+                    }
+                ]));
+            } catch (promptError) {
+                if (promptError && (promptError.name === 'ExitPromptError' || promptError.message?.includes('force closed'))) {
+                    await log('Interaktive Kursauswahl wurde vom Benutzer abgebrochen.');
+                    return;
                 }
-            ]);
+                throw promptError;
+            }
 
             const selectedCourse = courses[selectedCourseIndex];
             log(`Du hast gewählt: ${selectedCourse.title} (${selectedCourse.courseId})`);
