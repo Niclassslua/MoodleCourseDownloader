@@ -68,7 +68,7 @@ async function getCourseTitle(driver, courseUrl) {
     return courseTitle;
 }
 
-async function enumerateDownloads(driver, coursePath, downloadMode) {
+async function enumerateDownloads(driver, coursePath, downloadMode, quizSolverMode = 'prompt') {
     log('Warte, bis die Kursseite geladen ist');
     await driver.wait(until.elementLocated(By.css(MOODLE_SELECTORS.courseContent)), 10000);
 
@@ -158,7 +158,7 @@ async function enumerateDownloads(driver, coursePath, downloadMode) {
                         downloadList.push(resource);
                     } else if (resource.isQuiz && (downloadMode === 'all' || downloadMode === 'quizzes-only')) {
                         log(`Gefundenes Quiz: ${activityName} unter URL: ${activityUrl}`);
-                        await scrapeQuiz(driver, activityUrl, sectionPath);
+                        await scrapeQuiz(driver, activityUrl, sectionPath, quizSolverMode);
                     } else if (activityType.includes('modtype_resource') && (downloadMode === 'all' || downloadMode === 'resources-only')) {
                         log(`Gefundene Ressource: ${activityName} unter URL: ${activityUrl}`);
                         downloadList.push(resource);
