@@ -11,8 +11,8 @@ const MOODLE_SELECTORS = {
     sectionAriaLabel: 'aria-label',
     sectionHeader: 'h3.sectionname',
     activity: '.activity',
-    activityName: '.instancename',
-    activityLink: 'a',
+    activityName: '.instancename, .activityname, [data-region="activityname"]',
+    activityLink: 'a.aalink, .activityinstance a, .activity-item a.aalink',
     sectionTitleSelectors: [
         'h3.sectionname',
         'h3.sectionname span',
@@ -24,7 +24,8 @@ const MOODLE_SELECTORS = {
         '.section .content .sectionname',
         '.section .section-title h3',
         '.section .section-header h3',
-        'h3.sectionname.course-content-item'
+        'h3.sectionname.course-content-item',
+        '[data-region="section-title"]'
     ],
 };
 

@@ -68,7 +68,7 @@ async function getCourseTitle(driver, courseUrl) {
     return courseTitle;
 }
 
-async function enumerateDownloads(driver, coursePath, downloadMode) {
+async function enumerateDownloads(driver, coursePath, downloadMode, quizSolverMode = 'prompt') {
     log('Warte, bis die Kursseite geladen ist');
     await driver.wait(until.elementLocated(By.css(MOODLE_SELECTORS.courseContent)), 10000);
 
@@ -158,7 +158,7 @@ async function enumerateDownloads(driver, coursePath, downloadMode) {
                         downloadList.push(resource);
                     } else if (resource.isQuiz && (downloadMode === 'all' || downloadMode === 'quizzes-only')) {
                         log(`Gefundenes Quiz: ${activityName} unter URL: ${activityUrl}`);
-                        await scrapeQuiz(driver, activityUrl, sectionPath);
+                        await scrapeQuiz(driver, activityUrl, sectionPath, quizSolverMode);
                     } else if (activityType.includes('modtype_resource') && (downloadMode === 'all' || downloadMode === 'resources-only')) {
                         log(`Gefundene Ressource: ${activityName} unter URL: ${activityUrl}`);
                         downloadList.push(resource);
@@ -182,18 +182,39 @@ async function getSectionTitleFromElement(section, sectionIndex) {
     let sectionTitle = 'Unbenannte Sektion';
     let sectionTitleFound = false;
 
-    const possibleSelectors = MOODLE_SELECTORS.sectionTitleSelectors;
+    const attributeCandidates = ['data-sectionname', 'data-name', 'data-title'];
 
-    for (const selector of possibleSelectors) {
+    for (const attribute of attributeCandidates) {
         try {
-            log(`Sektion ${sectionIndex + 1}: Versuche Sektionsnamen mit Selektor "${selector}" zu finden`);
-            const sectionTitleElement = await section.findElement(By.css(selector));
-            sectionTitle = await sectionTitleElement.getText();
-            log(`Sektion ${sectionIndex + 1}: Gefundener Sektionsname mit Selektor "${selector}": "${sectionTitle}"`);
-            sectionTitleFound = true;
-            break;
+            const attributeValue = await section.getAttribute(attribute);
+            if (attributeValue && attributeValue.trim()) {
+                sectionTitle = attributeValue.trim();
+                sectionTitleFound = true;
+                log(`Sektion ${sectionIndex + 1}: Gefundener Sektionsname über Attribut "${attribute}": "${sectionTitle}"`);
+                break;
+            }
         } catch (err) {
-            log(`Sektion ${sectionIndex + 1}: Sektionsname nicht gefunden mit Selektor "${selector}"`);
+            log(`Sektion ${sectionIndex + 1}: Fehler beim Auslesen des Attributs "${attribute}": ${err.message}`);
+        }
+    }
+
+    if (!sectionTitleFound) {
+        const possibleSelectors = MOODLE_SELECTORS.sectionTitleSelectors;
+
+        for (const selector of possibleSelectors) {
+            try {
+                log(`Sektion ${sectionIndex + 1}: Versuche Sektionsnamen mit Selektor "${selector}" zu finden`);
+                const sectionTitleElement = await section.findElement(By.css(selector));
+                const extractedTitle = await sectionTitleElement.getText();
+                if (extractedTitle && extractedTitle.trim()) {
+                    sectionTitle = extractedTitle.trim();
+                    log(`Sektion ${sectionIndex + 1}: Gefundener Sektionsname mit Selektor "${selector}": "${sectionTitle}"`);
+                    sectionTitleFound = true;
+                    break;
+                }
+            } catch (err) {
+                log(`Sektion ${sectionIndex + 1}: Sektionsname nicht gefunden mit Selektor "${selector}"`);
+            }
         }
     }
 
