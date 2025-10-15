@@ -111,10 +111,14 @@ async function solveAndSubmitQuiz(driver, questions) {
             }
         }
 
-        console.log(`${fg.yellow}Finding submit button${reset}`);
-        const submitButton = await driver.findElement(By.css('button[type="submit"]'));
-        console.log(`${fg.yellow}Clicking submit button${reset}`);
-        await submitButton.click();
+        try {
+            console.log(`${fg.yellow}Finding submit button${reset}`);
+            const submitButton = await driver.findElement(By.css('button[type="submit"]'));
+            console.log(`${fg.yellow}Clicking submit button${reset}`);
+            await submitButton.click();
+        } catch (submitErr) {
+            console.warn(`${fg.yellow}No immediate submit button found; continuing without clicking.${reset}`);
+        }
     } catch (err) {
         console.error(`${fg.red}Error in solveAndSubmitQuiz: ${err.message}${reset}`);
     }
@@ -122,29 +126,66 @@ async function solveAndSubmitQuiz(driver, questions) {
 
 
 function generateBatchPrompt(questions) {
-    return questions.map((q, i) => {
-        if (q.type === 'match') {
-            const pairs = q.answers.map((answer) => answer.field).join(', ');
-            const options = q.correctAnswer.map((answer) => answer.selectedOption).join(', ');
-            return `Match Question ${i + 1}:
-${q.text}
-Pairs: ${pairs}
-Options: ${options}
-Format: [{"field": "field_name", "selectedOption": "matched_value"}]`;
-        } else if (q.type === 'multichoice') {
-            const options = q.answers
-                .map((answer, index) => `${String.fromCharCode(65 + index)}. ${answer.text}`)
-                .join('\n');
-            const format = q.choiceType === 'multiple' ? '["A", "C"]' : '["A"]';
-            const choiceType = q.choiceType === 'multiple' ? 'Multiple Choice' : 'Single Choice';
-            return `${choiceType} Question ${i + 1}:
-${q.text}
-Options:
-${options}
-Expected Format: ${format}`;
-        }
-        return '';
-    }).join('\n\n');
+    return questions
+        .map((q, i) => {
+            const header = `Question ${i + 1} (ID: ${q.id})`;
+
+            if (q.type === 'match') {
+                const fieldList = q.answers
+                    .map(answer => `- ${answer.field}`)
+                    .join('\n');
+                const optionPool = Array.from(
+                    new Set(
+                        (q.choicePool && q.choicePool.length
+                            ? q.choicePool
+                            : q.answers.flatMap(answer => answer.options || []))
+                            .filter(Boolean)
+                    )
+                );
+                const optionList = optionPool.length
+                    ? optionPool.map(option => `- ${option}`).join('\n')
+                    : '- (no options detected)';
+
+                return [
+                    header,
+                    'Type: match',
+                    `Prompt: ${q.text}`,
+                    'Fields:',
+                    fieldList,
+                    'Options:',
+                    optionList,
+                    'Respond with: [{"field": "...", "selectedOption": "..."}] referencing this question ID.',
+                ].join('\n');
+            }
+
+            if (q.type === 'multichoice') {
+                const options = q.answers
+                    .map((answer, index) => `${String.fromCharCode(65 + index)}. ${answer.text}`)
+                    .join('\n');
+                const isMultiple = q.choiceType === 'multiple';
+                const selectionHint = isMultiple
+                    ? 'Respond with all correct letters in an array, e.g. ["A", "C"].'
+                    : 'Respond with a single letter inside an array, e.g. ["B"].';
+
+                return [
+                    header,
+                    `Type: ${isMultiple ? 'multiple choice' : 'single choice'}`,
+                    `Prompt: ${q.text}`,
+                    'Options:',
+                    options,
+                    'Return the answer using this question ID exactly.',
+                    selectionHint,
+                ].join('\n');
+            }
+
+            return [
+                header,
+                `Type: ${q.type}`,
+                `Prompt: ${q.text}`,
+                'No automated instructions available for this question type. Respond with an empty response array.',
+            ].join('\n');
+        })
+        .join('\n\n');
 }
 
 function parseBatchResponse(responseContent, questions) {
