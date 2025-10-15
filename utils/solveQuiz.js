@@ -122,29 +122,51 @@ async function solveAndSubmitQuiz(driver, questions) {
 
 
 function generateBatchPrompt(questions) {
-    return questions.map((q, i) => {
-        if (q.type === 'match') {
-            const pairs = q.answers.map((answer) => answer.field).join(', ');
-            const options = q.correctAnswer.map((answer) => answer.selectedOption).join(', ');
-            return `Match Question ${i + 1}:
-${q.text}
-Pairs: ${pairs}
-Options: ${options}
-Format: [{"field": "field_name", "selectedOption": "matched_value"}]`;
-        } else if (q.type === 'multichoice') {
-            const options = q.answers
-                .map((answer, index) => `${String.fromCharCode(65 + index)}. ${answer.text}`)
-                .join('\n');
-            const format = q.choiceType === 'multiple' ? '["A", "C"]' : '["A"]';
-            const choiceType = q.choiceType === 'multiple' ? 'Multiple Choice' : 'Single Choice';
-            return `${choiceType} Question ${i + 1}:
-${q.text}
-Options:
-${options}
-Expected Format: ${format}`;
-        }
-        return '';
-    }).join('\n\n');
+    return questions
+        .map((question) => {
+            if (question.type === 'match') {
+                const fieldsList = question.answers
+                    .map((answer) => `- ${answer.field}`)
+                    .join('\n');
+                const optionsSource = Array.isArray(question.options) && question.options.length
+                    ? question.options
+                    : question.answers
+                        .map((answer) => answer.selectedOption)
+                        .filter(Boolean);
+                const optionsList = optionsSource.length
+                    ? optionsSource.map((option) => `- ${option}`).join('\n')
+                    : '- (no explicit options detected)';
+
+                return [
+                    `Match Question (ID: ${question.id})`,
+                    question.text,
+                    'Fields:',
+                    fieldsList,
+                    'Possible matches:',
+                    optionsList,
+                    'Respond format: [{"field": "field_name", "selectedOption": "matched_value"}]',
+                ].join('\n');
+            }
+
+            if (question.type === 'multichoice') {
+                const choiceType = question.choiceType === 'multiple' ? 'Multiple Choice' : 'Single Choice';
+                const expectedFormat = question.choiceType === 'multiple' ? '["A", "C"]' : '["A"]';
+                const optionsList = question.answers
+                    .map((answer, index) => `${String.fromCharCode(65 + index)}. ${answer.text}`)
+                    .join('\n');
+
+                return [
+                    `${choiceType} Question (ID: ${question.id})`,
+                    question.text,
+                    'Options:',
+                    optionsList,
+                    `Respond format: ${expectedFormat}`,
+                ].join('\n');
+            }
+
+            return `Question (ID: ${question.id})\n${question.text}\nRespond with an empty array if unsupported.`;
+        })
+        .join('\n\n');
 }
 
 function parseBatchResponse(responseContent, questions) {
@@ -155,14 +177,14 @@ function parseBatchResponse(responseContent, questions) {
             return questions.map(() => null);
         }
 
-        return questions.map((q, i) => {
+        return questions.map((q) => {
             const answer = parsed.answers.find((a) => a.id === q.id);
             if (!answer) return null;
 
             if (q.type === 'match' && answer.response) {
                 return answer.response;
             }
-            if ((q.type === 'multichoice' || q.type === 'single') && Array.isArray(answer.response)) {
+            if ((q.type === 'multichoice' || q.choiceType === 'single' || q.choiceType === 'multiple') && Array.isArray(answer.response)) {
                 return answer.response;
             }
             console.warn(`${fg.yellow}No valid data for question ${q.id}${reset}`);
