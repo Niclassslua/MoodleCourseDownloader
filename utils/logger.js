@@ -7,6 +7,10 @@ const debugFolder = path.join(__dirname, '../debug_pages');
 const LOG_FORMAT = process.env.MCD_LOG_FORMAT === 'structured' ? 'structured' : 'plain';
 const UI_LOG_LEVEL = (process.env.MCD_UI_LOG_LEVEL || 'info').toLowerCase();
 
+function silentLogsEnabled() {
+    return process.env.MCD_SILENT_LOGS === '1';
+}
+
 const LEVELS = ['debug', 'info', 'success', 'warn', 'error'];
 const LEVEL_PRIORITY = {
     debug: 10,
@@ -165,6 +169,10 @@ async function log(message, context = {}, driver = null) {
     const plainEntry = `${plainEntryParts.join(' ')} - ${message}`;
 
     appendLogFile(plainEntry);
+
+    if (silentLogsEnabled()) {
+        return;
+    }
 
     if (shouldForwardToUi(level)) {
         const uiPayload = {

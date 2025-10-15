@@ -34,6 +34,7 @@ SCRAPER_LOCK = threading.Lock()
 SCRAPER_THREAD: Optional[threading.Thread] = None
 SCRAPER_PROCESS: Optional[subprocess.Popen] = None
 COURSES_CACHE: Tuple[float, List[Dict[str, object]]] = (0.0, [])
+COURSE_DEBUG_DIR = os.path.join(ROOT_DIR, "debug", "courses")
 
 PROGRESS_STATE: Dict[str, object] = {
     "total": 0,
@@ -92,6 +93,53 @@ def format_size(num_bytes: int) -> str:
         index += 1
     precision = 0 if value >= 10 or index == 0 else 1
     return f"{value:.{precision}f} {units[index]}"
+
+
+def _ensure_course_debug_dir() -> str:
+    os.makedirs(COURSE_DEBUG_DIR, exist_ok=True)
+    return COURSE_DEBUG_DIR
+
+
+def _summarize_text(text: str, limit: int = 400) -> str:
+    if not text:
+        return ""
+    normalized = text.strip().replace("\r", "\n")
+    collapsed = " ".join(normalized.split())
+    if len(collapsed) <= limit:
+        return collapsed
+    return f"{collapsed[:limit]}…"
+
+
+def _record_course_debug(reason: str, stdout: str, stderr: str) -> Optional[str]:
+    try:
+        directory = _ensure_course_debug_dir()
+    except OSError as exc:
+        append_log("stderr", f"Konnte Kurs-Debug-Verzeichnis nicht erstellen: {exc}")
+        return None
+
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    meta = {
+        "timestamp": current_timestamp(),
+        "reason": reason,
+        "stdoutBytes": len(stdout or ""),
+        "stderrBytes": len(stderr or ""),
+    }
+
+    try:
+        meta_path = os.path.join(directory, "last_failure.json")
+        with open(meta_path, "w", encoding="utf-8") as fh:
+            json.dump(meta, fh, ensure_ascii=False, indent=2)
+        with open(os.path.join(directory, "last_stdout.txt"), "w", encoding="utf-8", errors="replace") as fh:
+            fh.write(stdout or "")
+        with open(os.path.join(directory, "last_stderr.txt"), "w", encoding="utf-8", errors="replace") as fh:
+            fh.write(stderr or "")
+        marker_path = os.path.join(directory, f"failure_{timestamp}.log")
+        with open(marker_path, "w", encoding="utf-8") as fh:
+            fh.write(meta["timestamp"])
+        return directory
+    except OSError as exc:
+        append_log("stderr", f"Konnte Kurs-Debug-Dateien nicht schreiben: {exc}")
+        return None
 
 
 class StreamClient:
@@ -347,7 +395,16 @@ def _load_courses_from_scraper(force: bool = False) -> List[Dict[str, object]]:
     try:
         payload = json.loads(stdout)
     except json.JSONDecodeError as exc:
-        append_log("stderr", f"Antwort der Kursliste ist ungültig: {exc}")
+        debug_dir = _record_course_debug("invalid_json", stdout, stderr)
+        snippet = _summarize_text(stdout)
+        message = f"Antwort der Kursliste ist ungültig: {exc}"
+        if snippet:
+            message = f"{message}; gekürzte Ausgabe: {snippet}"
+        append_log("stderr", message)
+        if stderr:
+            append_log("stderr", f"listCourses stderr: {_summarize_text(stderr)}")
+        if debug_dir:
+            append_log("stderr", f"Rohdaten der Kursliste wurden nach {debug_dir} geschrieben")
         return cached_courses
 
     if isinstance(payload, dict):
