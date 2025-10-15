@@ -365,7 +365,25 @@
         { id: 'quizzes-only', title: 'Tests', description: 'Quiz-Inhalte exportieren.' },
       ];
 
-      const OptionsPanel = ({ downloadMode, setDownloadMode, options, setOptions, outputDir, setOutputDir, maxConcurrentDownloads, setMaxConcurrentDownloads }) => (
+      const quizSolverModes = [
+        {
+          id: 'manual',
+          title: 'Manuell',
+          description: 'Ich löse Quizfragen selbst im Browser und der Scraper übernimmt nur die Auswertung.',
+        },
+        {
+          id: 'openai',
+          title: 'OpenAI',
+          description: 'Fragen automatisch mit der OpenAI API beantworten (benötigt gültigen API-Key).',
+        },
+        {
+          id: 'prompt',
+          title: 'Nachfragen',
+          description: 'Vor jedem Versuch nach dem Modus fragen (funktioniert nur in der interaktiven CLI).',
+        },
+      ];
+
+      const OptionsPanel = ({ downloadMode, setDownloadMode, quizSolverMode, setQuizSolverMode, options, setOptions, outputDir, setOutputDir, maxConcurrentDownloads, setMaxConcurrentDownloads }) => (
         <div className="rounded-3xl border border-white/10 bg-white/5 p-6 shadow-xl backdrop-blur">
           <div className="mb-6 flex items-center justify-between gap-4">
             <div>
@@ -389,6 +407,30 @@
                 <span className="text-xs text-slate-300">{mode.description}</span>
               </button>
             ))}
+          </div>
+
+          <div className="mt-6">
+            <label className="text-xs font-semibold uppercase tracking-wide text-white/60">Quiz-Bearbeitung</label>
+            <div className="mt-3 grid gap-4 sm:grid-cols-3">
+              {quizSolverModes.map((mode) => (
+                <button
+                  key={mode.id}
+                  type="button"
+                  onClick={() => setQuizSolverMode(mode.id)}
+                  className={`flex flex-col items-start gap-2 rounded-2xl border px-4 py-3 text-left transition ${
+                    quizSolverMode === mode.id
+                      ? 'border-emerald-400/60 bg-emerald-500/15 shadow-[0_14px_30px_rgba(16,185,129,0.25)]'
+                      : 'border-white/5 bg-slate-900/60 hover:border-white/15 hover:bg-slate-900/70'
+                  }`}
+                >
+                  <span className="text-sm font-semibold text-white">{mode.title}</span>
+                  <span className="text-xs text-slate-300">{mode.description}</span>
+                </button>
+              ))}
+            </div>
+            <p className="mt-2 text-[11px] text-white/40">
+              Hinweis: Ohne interaktive Konsole verhält sich die Option „Nachfragen“ wie „Manuell“.
+            </p>
           </div>
 
           <div className="mt-6 grid gap-4 lg:grid-cols-3">
@@ -644,6 +686,7 @@
         const [selectedCourse, setSelectedCourse] = useState(null);
         const [customCourseUrl, setCustomCourseUrl] = useState('');
         const [downloadMode, setDownloadMode] = useState('all');
+        const [quizSolverMode, setQuizSolverMode] = useState('manual');
         const [options, setOptions] = useState({ enableNotifications: false, keepBrowserOpen: false, manualDownload: false });
         const [outputDir, setOutputDir] = useState('./downloads');
         const [maxConcurrentDownloads, setMaxConcurrentDownloads] = useState(3);
@@ -978,6 +1021,7 @@
               downloadMode,
               outputDir,
               maxConcurrentDownloads,
+              quizSolverMode,
               enableNotifications: options.enableNotifications,
               keepBrowserOpen: options.keepBrowserOpen,
               manualDownload: options.manualDownload,
@@ -1194,6 +1238,8 @@
                   <OptionsPanel
                     downloadMode={downloadMode}
                     setDownloadMode={setDownloadMode}
+                    quizSolverMode={quizSolverMode}
+                    setQuizSolverMode={setQuizSolverMode}
                     options={options}
                     setOptions={setOptions}
                     outputDir={outputDir}

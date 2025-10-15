@@ -462,6 +462,8 @@ def payload_to_args(payload: Dict[str, object]) -> List[str]:
         args.extend(["--outputDir", str(output_dir)])
     if download_mode := payload.get("downloadMode"):
         args.extend(["--downloadMode", str(download_mode)])
+    if quiz_solver_mode := payload.get("quizSolverMode"):
+        args.extend(["--quizSolverMode", str(quiz_solver_mode)])
     if max_concurrent := payload.get("maxConcurrentDownloads"):
         args.extend(["--maxConcurrentDownloads", str(max_concurrent)])
     for flag in ("keepBrowserOpen", "enableNotifications", "manualDownload"):
