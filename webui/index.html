@@ -108,6 +108,126 @@
         error: 'bg-rose-500/25 text-rose-100 border-rose-400/40',
       };
 
+      const logLevelStyles = {
+        debug: {
+          container: 'border-white/5 bg-slate-900/60 text-slate-200',
+          badge: 'text-brand-200',
+        },
+        info: {
+          container: 'border-white/10 bg-white/5 text-slate-200',
+          badge: 'text-brand-200',
+        },
+        success: {
+          container: 'border-emerald-400/40 bg-emerald-500/15 text-emerald-100',
+          badge: 'text-emerald-200',
+        },
+        warn: {
+          container: 'border-amber-400/40 bg-amber-500/15 text-amber-100',
+          badge: 'text-amber-200',
+        },
+        error: {
+          container: 'border-rose-500/40 bg-rose-500/20 text-rose-100',
+          badge: 'text-rose-200',
+        },
+      };
+
+      const fileIcons = {
+        pdf: '📕',
+        doc: '📄',
+        docx: '📄',
+        txt: '📝',
+        md: '📝',
+        json: '🧾',
+        csv: '📊',
+        xls: '📊',
+        xlsx: '📊',
+        ppt: '🎞️',
+        pptx: '🎞️',
+        zip: '🗜️',
+        rar: '🗜️',
+        '7z': '🗜️',
+        jpg: '🖼️',
+        jpeg: '🖼️',
+        png: '🖼️',
+        gif: '🖼️',
+        webp: '🖼️',
+        bmp: '🖼️',
+        svg: '🖼️',
+        mp3: '🎧',
+        wav: '🎧',
+        mp4: '🎬',
+        mov: '🎬',
+        avi: '🎬',
+        html: '🌐',
+        default: '📁',
+      };
+
+      const stageLabels = {
+        idle: 'Bereit',
+        starting: 'Initialisiere',
+        running: 'Downloads laufen',
+        finishing: 'Abschließen',
+        finished: 'Abgeschlossen',
+        error: 'Fehler',
+      };
+
+      const formatBytes = (bytes) => {
+        const value = Number(bytes);
+        if (!Number.isFinite(value) || value <= 0) {
+          return '0 B';
+        }
+        const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+        let size = value;
+        let index = 0;
+        while (size >= 1024 && index < units.length - 1) {
+          size /= 1024;
+          index += 1;
+        }
+        const precision = size >= 10 || index === 0 ? 0 : 1;
+        return `${size.toFixed(precision)} ${units[index]}`;
+      };
+
+      const formatTimestamp = (value) => {
+        if (!value) {
+          return '–';
+        }
+        try {
+          return new Date(value).toLocaleTimeString();
+        } catch (error) {
+          return value;
+        }
+      };
+
+      const normalizeProgress = (incoming = {}) => {
+        const toNumber = (value) => {
+          const numeric = Number(value);
+          return Number.isFinite(numeric) ? numeric : 0;
+        };
+        const total = Math.max(0, toNumber(incoming.total));
+        const completed = Math.min(total, Math.max(0, toNumber(incoming.completed)));
+        const active = Math.max(0, toNumber(incoming.active));
+        const pending = incoming.pending != null ? Math.max(0, toNumber(incoming.pending)) : Math.max(0, total - completed - active);
+        const percentValue = incoming.percent != null ? Number(incoming.percent) : (total === 0 ? 100 : (completed / Math.max(total, 1)) * 100);
+        const percent = Math.max(0, Math.min(100, Math.round(percentValue)));
+        return {
+          total,
+          completed,
+          active,
+          pending,
+          percent,
+          stage: incoming.stage || 'idle',
+          current: incoming.current || null,
+          lastCompleted: incoming.lastCompleted || null,
+          message: incoming.message || null,
+          startedAt: incoming.startedAt || null,
+        };
+      };
+
+      const getFileIcon = (extension) => {
+        if (!extension) return fileIcons.default;
+        return fileIcons[extension.toLowerCase()] || fileIcons.default;
+      };
+
       const StatusBadge = ({ status }) => {
         const style = statusStyles[status] ?? statusStyles.idle;
         const labelMap = {
@@ -179,19 +299,37 @@
       );
 
       const LogItem = ({ entry }) => {
-        const isError = entry.stream === 'stderr';
+        const level = (entry.level || (entry.stream === 'stderr' ? 'error' : 'info')).toLowerCase();
+        const styles = logLevelStyles[level] ?? logLevelStyles.info;
+        const scopeParts = [];
+        if (entry.context?.fileName) {
+          scopeParts.push(entry.context.fileName);
+        }
+        if (entry.context?.functionName) {
+          scopeParts.push(entry.context.functionName);
+        }
+        const scopeLabel = scopeParts.join(' › ');
         return (
-          <div
-            className={`rounded-xl border px-3 py-2 text-xs leading-relaxed transition ${
-              isError ? 'border-rose-500/40 bg-rose-500/15 text-rose-100' : 'border-white/5 bg-white/5 text-slate-200'
-            }`}
-          >
-            <div className="mb-1 flex items-center justify-between gap-3 text-[10px] uppercase tracking-wide text-white/60">
-              <span className={isError ? 'text-rose-200' : 'text-brand-200'}>{isError ? 'Fehler' : 'Info'}</span>
+          <div className={`rounded-xl border px-3 py-2 text-xs leading-relaxed transition ${styles.container}`}>
+            <div className="mb-1 flex items-center justify-between gap-3 text-[10px] uppercase tracking-wide">
+              <span className={styles.badge}>
+                {level === 'debug'
+                  ? 'Debug'
+                  : level === 'success'
+                  ? 'Erfolg'
+                  : level === 'warn'
+                  ? 'Warnung'
+                  : level === 'error'
+                  ? 'Fehler'
+                  : 'Info'}
+              </span>
               <span className="text-white/40">
                 {entry.time ? new Date(entry.time).toLocaleTimeString() : new Date().toLocaleTimeString()}
               </span>
             </div>
+            {scopeLabel && (
+              <p className="mb-1 text-[10px] font-medium uppercase tracking-wide text-white/40">{scopeLabel}</p>
+            )}
             <p className="font-medium text-white/90 whitespace-pre-wrap">{entry.message}</p>
           </div>
         );
@@ -279,20 +417,20 @@
 
           <div className="mt-6 grid gap-3 sm:grid-cols-3">
             <Toggle
-              label="Desktop-Notifications"
-              description="Benachrichtige mich bei neuen Dateien."
+              label="Benachrichtigungen"
+              description="Desktop-Notifications bei neuen Dateien senden."
               value={options.enableNotifications}
               onChange={(value) => setOptions((prev) => ({ ...prev, enableNotifications: value }))}
             />
             <Toggle
-              label="Browser offen lassen"
-              description="Selenium-Instanz nicht automatisch beenden."
+              label="Browser offen halten"
+              description="Schließt den Selenium-Browser nach Abschluss nicht automatisch."
               value={options.keepBrowserOpen}
               onChange={(value) => setOptions((prev) => ({ ...prev, keepBrowserOpen: value }))}
             />
             <Toggle
-              label="Interaktive Kurswahl"
-              description="CLI übernimmt die Kursauswahl."
+              label="Manueller Download"
+              description="Nur die manuell angegebene URL verarbeiten."
               value={options.manualDownload}
               onChange={(value) => setOptions((prev) => ({ ...prev, manualDownload: value }))}
             />
@@ -300,26 +438,233 @@
         </div>
       );
 
+      const ProgressCard = ({ progress }) => {
+        const percent = Math.max(0, Math.min(100, progress.percent || 0));
+        const lastLabel = progress.lastCompleted?.name || '–';
+        const currentLabel = progress.current?.name || '–';
+        return (
+          <div className="rounded-3xl border border-white/10 bg-white/5 p-6 shadow-xl backdrop-blur">
+            <div className="flex items-center justify-between gap-4">
+              <div>
+                <h2 className="text-lg font-semibold text-white">Download-Fortschritt</h2>
+                <p className="text-sm text-slate-300">{stageLabels[progress.stage] || 'Aktualisierung'}</p>
+              </div>
+              <span className="rounded-full bg-brand-500/20 px-3 py-1 text-sm font-semibold text-brand-100">{percent}%</span>
+            </div>
+            <div className="mt-4 h-3 w-full overflow-hidden rounded-full bg-white/10">
+              <div
+                className="h-full rounded-full bg-brand-500/70 transition-all duration-500"
+                style={{ width: `${percent}%` }}
+              ></div>
+            </div>
+            <div className="mt-4 grid gap-3 text-xs text-white/70 sm:grid-cols-4">
+              <div>
+                <p className="font-semibold text-white/80">Abgeschlossen</p>
+                <p>
+                  {progress.completed} / {progress.total}
+                </p>
+              </div>
+              <div>
+                <p className="font-semibold text-white/80">Aktiv</p>
+                <p>{progress.active}</p>
+              </div>
+              <div>
+                <p className="font-semibold text-white/80">Ausstehend</p>
+                <p>{progress.pending}</p>
+              </div>
+              <div>
+                <p className="font-semibold text-white/80">Letzte Datei</p>
+                <p className="truncate">{lastLabel}</p>
+              </div>
+            </div>
+            <div className="mt-4 rounded-2xl border border-white/5 bg-slate-900/50 p-3 text-xs text-white/70">
+              <p className="font-semibold text-white/80">Aktuell</p>
+              <p className="truncate text-white/60">{currentLabel}</p>
+            </div>
+          </div>
+        );
+      };
+
+      const DownloadSummaryPanel = ({ files, selectedFileId, onSelectFile, previewState }) => {
+        const totalSize = useMemo(() => files.reduce((sum, item) => sum + (item.sizeBytes || 0), 0), [files]);
+        const totalSizeLabel = formatBytes(totalSize);
+        const selectedFile = useMemo(
+          () => files.find((item) => item.id === selectedFileId) || null,
+          [files, selectedFileId]
+        );
+        const preview = useMemo(() => {
+          if (!selectedFile) {
+            return { status: 'idle', id: null };
+          }
+          if (previewState.id !== selectedFile.id) {
+            return previewState.status === 'loading'
+              ? previewState
+              : { status: 'loading', id: selectedFile.id, mime: selectedFile.mime || '' };
+          }
+          return previewState;
+        }, [previewState, selectedFile]);
+
+        return (
+          <div className="rounded-3xl border border-white/10 bg-slate-950/70 p-6 shadow-xl backdrop-blur">
+            <div className="flex items-center justify-between gap-4">
+              <div>
+                <h2 className="text-lg font-semibold text-white">Geladene Dateien</h2>
+                <p className="text-sm text-slate-300">Strukturierte Übersicht aller Ressourcen.</p>
+              </div>
+              <div className="text-right text-xs text-white/70">
+                <p className="font-semibold text-white">{files.length} Dateien</p>
+                <p className="text-white/50">{totalSizeLabel}</p>
+              </div>
+            </div>
+            {files.length === 0 ? (
+              <div className="mt-5 rounded-2xl border border-dashed border-white/10 bg-white/5 p-6 text-center text-sm text-slate-300">
+                Noch keine Dateien geladen.
+              </div>
+            ) : (
+              <div className="mt-5 grid gap-5 lg:grid-cols-[1.6fr,2fr]">
+                <div className="no-scrollbar flex max-h-[360px] flex-col gap-2 overflow-y-auto pr-1">
+                  {files.map((file) => {
+                    const isActive = file.id === selectedFileId;
+                    return (
+                      <button
+                        type="button"
+                        key={file.id}
+                        onClick={() => onSelectFile(file.id)}
+                        className={`flex items-start gap-3 rounded-2xl border px-4 py-3 text-left transition ${
+                          isActive
+                            ? 'border-brand-500/60 bg-brand-500/15 shadow-[0_10px_20px_rgba(91,141,239,0.25)]'
+                            : 'border-white/5 bg-slate-900/60 hover:border-white/15 hover:bg-slate-900/80'
+                        }`}
+                      >
+                        <span className="text-2xl leading-none">{getFileIcon(file.extension)}</span>
+                        <div className="min-w-0">
+                          <p className="truncate text-sm font-semibold text-white">{file.name}</p>
+                          <p className="truncate text-[11px] text-white/50">{file.relativePath}</p>
+                          <p className="mt-1 text-[11px] text-white/40">
+                            {file.sizeHuman || formatBytes(file.sizeBytes || 0)} · {file.extension ? file.extension.toUpperCase() : 'DATEI'}
+                          </p>
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+                <div className="flex flex-col gap-4 rounded-2xl border border-white/10 bg-slate-900/60 p-4">
+                  {!selectedFile ? (
+                    <div className="flex h-full items-center justify-center text-sm text-white/60">
+                      Wähle eine Datei aus der Liste für Details und Vorschau.
+                    </div>
+                  ) : (
+                    <>
+                      <div>
+                        <h3 className="text-sm font-semibold text-white">{selectedFile.name}</h3>
+                        <p className="text-xs text-white/50">{selectedFile.relativePath}</p>
+                        <div className="mt-2 grid gap-2 text-[11px] text-white/60 sm:grid-cols-2">
+                          <div>
+                            <p className="font-semibold text-white/70">Größe</p>
+                            <p>{selectedFile.sizeHuman || formatBytes(selectedFile.sizeBytes || 0)}</p>
+                          </div>
+                          <div>
+                            <p className="font-semibold text-white/70">Typ</p>
+                            <p>{selectedFile.mime || (selectedFile.extension ? selectedFile.extension.toUpperCase() : 'Unbekannt')}</p>
+                          </div>
+                          <div>
+                            <p className="font-semibold text-white/70">Zuletzt geladen</p>
+                            <p>{formatTimestamp(selectedFile.downloadedAt)}</p>
+                          </div>
+                          <div>
+                            <p className="font-semibold text-white/70">Quelle</p>
+                            <p className="truncate">{selectedFile.resourceName || 'Unbekannt'}</p>
+                          </div>
+                        </div>
+                      </div>
+                      <div className="min-h-[180px] rounded-xl border border-white/5 bg-slate-950/60 p-4">
+                        {preview.status === 'loading' ? (
+                          <div className="flex h-full items-center justify-center text-sm text-white/60">Vorschau wird geladen…</div>
+                        ) : preview.status === 'error' ? (
+                          <div className="flex h-full items-center justify-center text-sm text-rose-200">
+                            Vorschau nicht möglich: {preview.error || 'Unbekannter Fehler'}
+                          </div>
+                        ) : preview.status === 'unsupported' ? (
+                          <div className="flex h-full flex-col items-center justify-center text-center text-sm text-white/60">
+                            <p>Für diesen Dateityp steht keine direkte Vorschau zur Verfügung.</p>
+                            <a
+                              className="mt-3 inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs text-white/70 hover:border-brand-400 hover:text-brand-100"
+                              href={`${API_BASE}/api/files/preview?id=${encodeURIComponent(selectedFile.id)}`}
+                              target="_blank"
+                              rel="noreferrer"
+                            >
+                              Datei öffnen
+                            </a>
+                          </div>
+                        ) : preview.status === 'ready' && preview.type === 'image' ? (
+                          <div className="flex h-full items-center justify-center">
+                            <img src={preview.objectUrl} alt={selectedFile.name} className="max-h-full rounded-lg shadow-lg" />
+                          </div>
+                        ) : preview.status === 'ready' && preview.type === 'pdf' ? (
+                          <iframe
+                            src={preview.objectUrl}
+                            title={selectedFile.name}
+                            className="h-[260px] w-full rounded-lg border border-white/10"
+                          ></iframe>
+                        ) : preview.status === 'ready' && preview.type === 'text' ? (
+                          <pre className="max-h-[220px] overflow-auto rounded-lg bg-black/40 p-3 text-[11px] text-slate-200 whitespace-pre-wrap">
+                            {preview.content}
+                          </pre>
+                        ) : preview.status === 'ready' && preview.type === 'binary' ? (
+                          <div className="flex h-full flex-col items-center justify-center text-sm text-white/70">
+                            <p>Dieser Dateityp kann nicht inline angezeigt werden.</p>
+                            <a
+                              className="mt-3 inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs text-white/70 hover:border-brand-400 hover:text-brand-100"
+                              href={preview.objectUrl}
+                              target="_blank"
+                              rel="noreferrer"
+                            >
+                              Datei öffnen
+                            </a>
+                          </div>
+                        ) : (
+                          <div className="flex h-full items-center justify-center text-sm text-white/60">
+                            Keine Vorschau verfügbar.
+                          </div>
+                        )}
+                      </div>
+                    </>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      };
+
       const Dashboard = () => {
         const [courses, setCourses] = useState([]);
-        const [loadingCourses, setLoadingCourses] = useState(true);
+        const [loadingCourses, setLoadingCourses] = useState(false);
         const [courseError, setCourseError] = useState(null);
         const [selectedCourse, setSelectedCourse] = useState(null);
         const [customCourseUrl, setCustomCourseUrl] = useState('');
-        const [searchTerm, setSearchTerm] = useState('');
-        const [logs, setLogs] = useState([]);
-        const [status, setStatus] = useState('idle');
-        const [options, setOptions] = useState({
-          enableNotifications: false,
-          keepBrowserOpen: false,
-          manualDownload: false,
-        });
         const [downloadMode, setDownloadMode] = useState('all');
+        const [options, setOptions] = useState({ enableNotifications: false, keepBrowserOpen: false, manualDownload: false });
         const [outputDir, setOutputDir] = useState('./downloads');
         const [maxConcurrentDownloads, setMaxConcurrentDownloads] = useState(3);
+        const [logs, setLogs] = useState([]);
+        const [status, setStatus] = useState('idle');
+        const [searchTerm, setSearchTerm] = useState('');
         const [apiError, setApiError] = useState(null);
         const [starting, setStarting] = useState(false);
         const [wsConnected, setWsConnected] = useState(false);
+        const [progress, setProgress] = useState(() => normalizeProgress());
+        const [downloadedFiles, setDownloadedFiles] = useState([]);
+        const [selectedFileId, setSelectedFileId] = useState(null);
+        const [previewState, setPreviewState] = useState({
+          status: 'idle',
+          id: null,
+          type: null,
+          objectUrl: null,
+          content: null,
+          mime: null,
+          error: null,
+        });
 
         const logsRef = useRef([]);
         const seenLogsRef = useRef(new Set());
@@ -372,10 +717,18 @@
               if (Array.isArray(data.log)) {
                 const prepared = data.log.map((entry) => ({ ...entry, time: entry.time ?? Date.now() }));
                 logsRef.current = prepared;
-                seenLogsRef.current = new Set(
-                  prepared.map((entry) => `${entry.time}|${entry.stream}|${entry.message}`)
-                );
+                seenLogsRef.current = new Set(prepared.map((entry) => `${entry.time}|${entry.stream}|${entry.message}`));
                 setLogs(prepared);
+              }
+              if (data.progress && typeof data.progress === 'object') {
+                setProgress(normalizeProgress(data.progress));
+              } else {
+                setProgress(normalizeProgress());
+              }
+              if (Array.isArray(data.files)) {
+                setDownloadedFiles(data.files);
+              } else {
+                setDownloadedFiles([]);
               }
             } catch (error) {
               console.warn('Status konnte nicht abgefragt werden:', error);
@@ -385,6 +738,100 @@
           loadCourses();
           loadStatus();
         }, [loadCourses]);
+
+        useEffect(() => {
+          if (downloadedFiles.length === 0) {
+            setSelectedFileId(null);
+            return;
+          }
+          if (!selectedFileId || !downloadedFiles.some((file) => file.id === selectedFileId)) {
+            setSelectedFileId(downloadedFiles[0].id);
+          }
+        }, [downloadedFiles, selectedFileId]);
+
+        useEffect(() => {
+          let cancelled = false;
+          let objectUrl = null;
+
+          const file = downloadedFiles.find((item) => item.id === selectedFileId);
+          if (!selectedFileId || !file) {
+            setPreviewState((prev) => {
+              if (prev.objectUrl) {
+                URL.revokeObjectURL(prev.objectUrl);
+              }
+              return { status: 'idle', id: null, type: null, objectUrl: null, content: null, mime: null, error: null };
+            });
+            return () => {};
+          }
+
+          if (!file.previewable) {
+            setPreviewState((prev) => {
+              if (prev.objectUrl) {
+                URL.revokeObjectURL(prev.objectUrl);
+              }
+              return { status: 'unsupported', id: file.id, type: null, objectUrl: null, content: null, mime: file.mime || '', error: null };
+            });
+            return () => {};
+          }
+
+          setPreviewState((prev) => {
+            if (prev.objectUrl && prev.id !== file.id) {
+              URL.revokeObjectURL(prev.objectUrl);
+            }
+            return { status: 'loading', id: file.id, type: null, objectUrl: null, content: null, mime: file.mime || '', error: null };
+          });
+
+          fetch(`${API_BASE}/api/files/preview?id=${encodeURIComponent(file.id)}`, { cache: 'no-store' })
+            .then((response) => {
+              if (!response.ok) {
+                const errorMessage = response.status === 413 ? 'Datei ist zu groß für die Vorschau.' : 'Vorschau konnte nicht geladen werden.';
+                throw new Error(errorMessage);
+              }
+              const mime = response.headers.get('Content-Type') || file.mime || 'application/octet-stream';
+              if (mime.startsWith('image/') || mime === 'application/pdf') {
+                return response.blob().then((blob) => ({ kind: mime === 'application/pdf' ? 'pdf' : 'image', blob, mime }));
+              }
+              if (mime.startsWith('text/') || mime.includes('json') || mime.includes('xml')) {
+                return response.text().then((text) => ({ kind: 'text', text, mime }));
+              }
+              return response.blob().then((blob) => ({ kind: 'binary', blob, mime }));
+            })
+            .then((result) => {
+              if (cancelled) {
+                if (result.blob) {
+                  URL.revokeObjectURL(URL.createObjectURL(result.blob));
+                }
+                return;
+              }
+              if (result.kind === 'text') {
+                setPreviewState({ status: 'ready', id: file.id, type: 'text', objectUrl: null, content: result.text, mime: result.mime, error: null });
+              } else {
+                objectUrl = URL.createObjectURL(result.blob);
+                setPreviewState({
+                  status: 'ready',
+                  id: file.id,
+                  type: result.kind === 'image' ? 'image' : result.kind === 'pdf' ? 'pdf' : 'binary',
+                  objectUrl,
+                  content: null,
+                  mime: result.mime,
+                  error: null,
+                });
+              }
+            })
+            .catch((error) => {
+              if (cancelled) {
+                return;
+              }
+              setPreviewState({ status: 'error', id: file.id, type: null, objectUrl: null, content: null, mime: file.mime || '', error: error.message });
+            });
+
+          return () => {
+            cancelled = true;
+            if (objectUrl) {
+              URL.revokeObjectURL(objectUrl);
+            }
+          };
+        }, [selectedFileId, downloadedFiles, API_BASE]);
 
         const handleRefreshCourses = useCallback(() => {
           loadCourses({ force: true });
@@ -427,6 +874,19 @@
               registerLogEntry(entry);
             } else if (payload.type === 'status' && payload.status) {
               setStatus(payload.status);
+              if (payload.status === 'starting') {
+                setDownloadedFiles([]);
+                setSelectedFileId(null);
+                setProgress(normalizeProgress({ stage: 'starting', total: 0, completed: 0, active: 0 }));
+              }
+            } else if (payload.type === 'progress') {
+              setProgress((prev) => normalizeProgress({ ...prev, ...payload }));
+            } else if (payload.type === 'download' && payload.file) {
+              setDownloadedFiles((prev) => {
+                const existing = new Set([payload.file.id]);
+                const next = [payload.file, ...prev.filter((item) => !existing.has(item.id))];
+                return next.slice(0, 300);
+              });
             }
           };
 
@@ -447,6 +907,8 @@
             };
             source.addEventListener('log', onEvent);
             source.addEventListener('status', onEvent);
+            source.addEventListener('progress', onEvent);
+            source.addEventListener('download', onEvent);
             source.onmessage = onEvent;
           };
 
@@ -462,11 +924,7 @@
             };
             wsInstance.onclose = () => {
               setWsConnected(false);
-              if (!wsOpened) {
-                connectSse();
-              } else {
-                connectSse();
-              }
+              connectSse();
               wsInstance = null;
             };
             wsInstance.onerror = () => {
@@ -567,11 +1025,9 @@
                     <h1 className="text-3xl font-bold text-white sm:text-4xl">
                       Moodle Downloader – orchestriert über das Realtime Control Center
                     </h1>
-                      <p className="text-sm text-slate-300 sm:text-base">
-                        Steuere die Node.js CLI direkt aus dem Browser, starte Synchronisationen mit einem Klick und verfolge jede
-                        Logzeile live. Die Python-Bridge kapselt den Scraper-Prozess und streamt Statusupdates über Server-Sent Events an
-                        dieses Dashboard.
-                      </p>
+                    <p className="text-sm text-slate-300 sm:text-base">
+                      Steuere die Node.js CLI direkt aus dem Browser, starte Synchronisationen mit einem Klick und verfolge jede Logzeile live. Die Python-Bridge kapselt den Scraper-Prozess und streamt Statusupdates an dieses Dashboard.
+                    </p>
                   </div>
                   <div className="flex flex-col items-end gap-4">
                     <button
@@ -637,7 +1093,7 @@
                           type="button"
                           onClick={handleRefreshCourses}
                           disabled={loadingCourses}
-                          className={`inline-flex items-center gap-2 rounded-full border px-3 py-1 text-[11px] font-medium transition ${
+                          className={`inline-flex items-center gap-2 rounded-full border px-3 py-1 text-[11px] font-semibold transition ${
                             loadingCourses
                               ? 'cursor-wait border-white/10 bg-white/5 text-white/40'
                               : 'border-white/15 bg-slate-900/60 text-white/70 hover:border-brand-400 hover:text-brand-100'
@@ -734,6 +1190,7 @@
                 </div>
 
                 <div className="space-y-6">
+                  <ProgressCard progress={progress} />
                   <OptionsPanel
                     downloadMode={downloadMode}
                     setDownloadMode={setDownloadMode}
@@ -743,6 +1200,12 @@
                     setOutputDir={setOutputDir}
                     maxConcurrentDownloads={maxConcurrentDownloads}
                     setMaxConcurrentDownloads={setMaxConcurrentDownloads}
+                  />
+                  <DownloadSummaryPanel
+                    files={downloadedFiles}
+                    selectedFileId={selectedFileId}
+                    onSelectFile={setSelectedFileId}
+                    previewState={previewState}
                   />
                   <LogPanel logs={logs} />
                 </div>

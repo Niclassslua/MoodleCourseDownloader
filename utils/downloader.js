@@ -1,49 +1,42 @@
 const fs = require('fs');
 const path = require('path');
 const axios = require('axios');
-const { log } = require('./logger');
-const { By, until } = require('selenium-webdriver');
-const { createDirectories, clearDirectory, sanitizeFilename, safeUnlink } = require('./directories');
+const { log, emitUiEvent } = require('./logger');
+const { By } = require('selenium-webdriver');
+const { clearDirectory, sanitizeFilename } = require('./directories');
 const { scrapeForumPosts } = require('./forumScraper');
-const { MOODLE_SELECTORS, RESOURCE_SELECTORS, FORUM_SELECTORS, FOLDER_SELECTORS } = require('./selectors');
+const { MOODLE_SELECTORS, RESOURCE_SELECTORS, FOLDER_SELECTORS } = require('./selectors');
 
 const readline = require('readline');
 
 const MAX_FILE_SIZE_BYTES = 100 * 1024 * 1024; // 100 MB
-const DOWNLOAD_DEBUG_INTERVAL_BYTES = 5 * 1024 * 1024; // Log every 5 MB when debugging
+const DOWNLOAD_DEBUG_INTERVAL_BYTES = 5 * 1024 * 1024;
 const DEBUG_DOWNLOAD_SIZE = process.env.MCD_DEBUG_DOWNLOAD_SIZE === '1';
 
-const colors = {
-    reset: "\x1b[0m",
-    bright: "\x1b[1m",
-    dim: "\x1b[2m",
-    underscore: "\x1b[4m",
-    blink: "\x1b[5m",
-    reverse: "\x1b[7m",
-    hidden: "\x1b[8m",
+const PREVIEWABLE_EXTENSIONS = new Set([
+    'pdf',
+    'txt',
+    'md',
+    'json',
+    'csv',
+    'jpg',
+    'jpeg',
+    'png',
+    'gif',
+    'webp',
+    'bmp',
+    'svg',
+]);
 
+const colors = {
+    reset: '\x1b[0m',
     fg: {
-        black: "\x1b[30m",
-        red: "\x1b[31m",
-        green: "\x1b[32m",
-        yellow: "\x1b[33m",
-        blue: "\x1b[34m",
-        magenta: "\x1b[35m",
-        cyan: "\x1b[36m",
-        white: "\x1b[37m",
-        crimson: "\x1b[38m" // Scarlet
+        green: '\x1b[32m',
+        blue: '\x1b[34m',
+        magenta: '\x1b[35m',
+        cyan: '\x1b[36m',
+        yellow: '\x1b[33m',
     },
-    bg: {
-        black: "\x1b[40m",
-        red: "\x1b[41m",
-        green: "\x1b[42m",
-        yellow: "\x1b[43m",
-        blue: "\x1b[44m",
-        magenta: "\x1b[45m",
-        cyan: "\x1b[46m",
-        white: "\x1b[47m",
-        crimson: "\x1b[48m"
-    }
 };
 
 function logDownloadSizeDebug(message, additionalData = {}) {
@@ -52,6 +45,7 @@ function logDownloadSizeDebug(message, additionalData = {}) {
     }
 
     log(message, {
+        level: 'debug',
         fileName: 'utils/downloader.js',
         functionName: 'downloadFile',
         additionalData,
@@ -60,12 +54,117 @@ function logDownloadSizeDebug(message, additionalData = {}) {
 
 function showProgress(completed, total) {
     readline.cursorTo(process.stdout, 0);
-    process.stdout.write(`Progress: ${completed}/${total} (${((completed / total) * 100).toFixed(2)}%)`);
+    process.stdout.write(`Progress: ${completed}/${total} (${total === 0 ? '100.00' : ((completed / total) * 100).toFixed(2)}%)`);
 }
 
 function clearProgress() {
     readline.cursorTo(process.stdout, 0);
     readline.clearLine(process.stdout, 0);
+}
+
+function formatBytes(bytes) {
+    if (!Number.isFinite(bytes) || bytes < 0) {
+        return '0 B';
+    }
+    if (bytes === 0) {
+        return '0 B';
+    }
+    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+    let value = bytes;
+    let index = 0;
+    while (value >= 1024 && index < units.length - 1) {
+        value /= 1024;
+        index += 1;
+    }
+    const precision = value >= 10 || index === 0 ? 0 : 1;
+    return `${value.toFixed(precision)} ${units[index]}`;
+}
+
+function determineResourceKind(resource) {
+    if (resource.isFolder) {
+        return 'folder';
+    }
+    if (resource.isLink) {
+        return 'link';
+    }
+    if (resource.isForum) {
+        return 'forum';
+    }
+    return 'resource';
+}
+
+function buildTaskDescriptor(resource, targetPath) {
+    return {
+        name: resource.name,
+        type: determineResourceKind(resource),
+        path: path.relative(process.cwd(), targetPath),
+        url: resource.url,
+    };
+}
+
+function describeFileForUi(filePath, sectionDir, resourceName, url, sizeBytes) {
+    const name = path.basename(filePath);
+    const extension = path.extname(name).replace('.', '').toLowerCase();
+    const descriptor = {
+        name,
+        resourceName,
+        path: filePath,
+        relativePath: path.relative(process.cwd(), filePath),
+        sectionPath: sectionDir ? path.relative(process.cwd(), sectionDir) : '',
+        sizeBytes,
+        sizeHuman: formatBytes(sizeBytes),
+        extension,
+        url,
+        previewHint: PREVIEWABLE_EXTENSIONS.has(extension) ? 'preview' : 'download',
+        downloadedAt: new Date().toISOString(),
+    };
+    return descriptor;
+}
+
+function createProgressEmitter(total) {
+    const state = {
+        total,
+        completed: 0,
+        active: 0,
+        startedAt: Date.now(),
+    };
+
+    const emit = (extra = {}) => {
+        const pending = Math.max(state.total - state.completed - state.active, 0);
+        const percent = state.total === 0 ? 100 : Math.min(100, Math.round((state.completed / state.total) * 100));
+        emitUiEvent('progress', {
+            total: state.total,
+            completed: state.completed,
+            active: state.active,
+            pending,
+            percent,
+            startedAt: state.startedAt,
+            ...extra,
+        });
+    };
+
+    emit({ stage: total === 0 ? 'idle' : 'running' });
+
+    return {
+        state,
+        emit,
+        start(task) {
+            state.active += 1;
+            emit({ stage: 'running', current: task });
+        },
+        complete(task) {
+            state.active = Math.max(state.active - 1, 0);
+            state.completed += 1;
+            emit({ stage: state.completed >= state.total ? 'finishing' : 'running', lastCompleted: task });
+        },
+        finish() {
+            state.active = 0;
+            if (state.completed < state.total) {
+                state.completed = state.total;
+            }
+            emit({ stage: 'finished' });
+        },
+    };
 }
 
 async function processDownloadQueue(downloadList, maxConcurrent, driver, tempDownloadDir) {
@@ -74,49 +173,66 @@ async function processDownloadQueue(downloadList, maxConcurrent, driver, tempDow
     const activeDownloads = [];
     let completedDownloads = 0;
 
+    const progress = createProgressEmitter(downloadList.length);
+
     showProgress(completedDownloads, downloadList.length);
 
     while (queue.length > 0) {
         while (activeDownloads.length < maxConcurrent && queue.length > 0) {
-            const { url, path, name, isFolder, isLink, isForum } = queue.shift();
-            log(`Queueing download for: ${name} (Type: ${isFolder ? `${colors.fg.blue}Folder${colors.reset}` : isLink ? `${colors.fg.magenta}Link${colors.reset}` : isForum ? `${colors.fg.cyan}Forum${colors.reset}` : `${colors.fg.green}Resource${colors.reset}`})`);
+            const resource = queue.shift();
+            if (!resource) {
+                break;
+            }
+            const { url, path: targetPath, name, isFolder, isLink, isForum } = resource;
+            const resourceKind = determineResourceKind(resource);
+            const taskDescriptor = buildTaskDescriptor(resource, targetPath);
+            const coloredType = isFolder
+                ? `${colors.fg.blue}Ordner${colors.reset}`
+                : isLink
+                    ? `${colors.fg.magenta}Link${colors.reset}`
+                    : isForum
+                        ? `${colors.fg.cyan}Forum${colors.reset}`
+                        : `${colors.fg.green}Ressource${colors.reset}`;
+
+            log(`Queueing download for: ${name} (Typ: ${coloredType})`, {
+                level: 'debug',
+                fileName: 'utils/downloader.js',
+                functionName: 'processDownloadQueue',
+            });
+
+            progress.start(taskDescriptor);
 
             const downloadPromise = isFolder
-                ? processFolder(url, path, name, driver, tempDownloadDir, clearDirectory).finally(() => {
-                    activeDownloads.splice(activeDownloads.indexOf(downloadPromise), 1);
-                    completedDownloads++;
-                    showProgress(completedDownloads, downloadList.length);
-                })
+                ? processFolder(url, targetPath, name, driver, tempDownloadDir)
                 : isLink
-                    ? processLink(url, path, name, driver).finally(() => {
-                        activeDownloads.splice(activeDownloads.indexOf(downloadPromise), 1);
-                        completedDownloads++;
-                        showProgress(completedDownloads, downloadList.length);
-                    })
+                    ? processLink(url, targetPath, name, driver)
                     : isForum
-                        ? scrapeForumPosts(url, path, name, driver).finally(() => {
-                            activeDownloads.splice(activeDownloads.indexOf(downloadPromise), 1);
-                            completedDownloads++;
-                            showProgress(completedDownloads, downloadList.length);
-                        })
-                        : processResource(url, path, name, driver, tempDownloadDir, clearDirectory).finally(() => {
-                            activeDownloads.splice(activeDownloads.indexOf(downloadPromise), 1);
-                            completedDownloads++;
-                            showProgress(completedDownloads, downloadList.length);
-                        });
-            activeDownloads.push(downloadPromise);
-            results.push(downloadPromise);
+                        ? scrapeForumPosts(url, targetPath, name, driver)
+                        : processResource(url, targetPath, name, driver, tempDownloadDir);
+
+            const wrappedPromise = downloadPromise.finally(() => {
+                activeDownloads.splice(activeDownloads.indexOf(wrappedPromise), 1);
+                completedDownloads += 1;
+                progress.complete(taskDescriptor);
+                showProgress(completedDownloads, downloadList.length);
+            });
+
+            activeDownloads.push(wrappedPromise);
+            results.push(wrappedPromise);
         }
-        await Promise.race(activeDownloads);
+        if (activeDownloads.length > 0) {
+            await Promise.race(activeDownloads);
+        }
     }
 
     await Promise.all(results);
-    clearProgress(); // Clear progress display when done
+    progress.finish();
+    clearProgress();
 }
 
-async function processResource(url, sectionPath, resourceName, driver, tempDownloadDir, clearDirectory) {
+async function processResource(url, sectionPath, resourceName, driver, tempDownloadDir) {
     try {
-        log(`\x1b[32mProcessing resource URL:\x1b[0m ${url}`);
+        log(`Verarbeite Ressourcen-URL: ${url}`);
         await driver.get(url);
 
         const resourceContentLinks = await driver.findElements(By.css(RESOURCE_SELECTORS.resourceContentLink));
@@ -128,23 +244,27 @@ async function processResource(url, sectionPath, resourceName, driver, tempDownl
         if (resourceContentLinks.length > 0) {
             const downloadLink = await resourceContentLinks[0].getAttribute('href');
             log(`Found resource content link, treating as resource-encapsulated download: ${downloadLink}`);
-            await downloadFile(downloadLink, sectionPath, resourceName, driver, tempDownloadDir, clearDirectory);
+            await downloadFile(downloadLink, sectionPath, resourceName, driver, tempDownloadDir);
         } else if (resourceContentImages.length > 0) {
             const downloadLink = await resourceContentImages[0].getAttribute('src');
             log(`Found resource content image, treating as resource-encapsulated download: ${downloadLink}`);
-            await downloadFile(downloadLink, sectionPath, resourceName, driver, tempDownloadDir, clearDirectory);
+            await downloadFile(downloadLink, sectionPath, resourceName, driver, tempDownloadDir);
         } else {
             log(`No resource content found for URL: ${url}, treating as direct download.`);
-            await downloadFile(url, sectionPath, resourceName, driver, tempDownloadDir, clearDirectory);
+            await downloadFile(url, sectionPath, resourceName, driver, tempDownloadDir);
         }
     } catch (err) {
-        log(`\x1b[31mFailed to process resource from ${url}:\x1b[0m ${err.message}`);
+        log(`Failed to process resource from ${url}: ${err.message}`, {
+            level: 'error',
+            fileName: 'utils/downloader.js',
+            functionName: 'processResource',
+        });
     }
 }
 
-async function processFolder(url, sectionPath, folderName, driver, tempDownloadDir, clearDirectory) {
+async function processFolder(url, sectionPath, folderName, driver, tempDownloadDir) {
     try {
-        log(`\x1b[34mProcessing folder URL:\x1b[0m ${url}`);
+        log(`Processing folder URL: ${url}`);
         await driver.get(url);
 
         const folderPath = path.join(sectionPath, sanitizeFilename(folderName));
@@ -159,16 +279,20 @@ async function processFolder(url, sectionPath, folderName, driver, tempDownloadD
             const fileName = await link.findElement(By.css(FOLDER_SELECTORS.folderFileName)).getText();
 
             log(`Found file in folder: ${fileName} at URL: ${downloadLink}`);
-            await downloadFile(downloadLink, folderPath, fileName, driver, tempDownloadDir, clearDirectory);
+            await downloadFile(downloadLink, folderPath, fileName, driver, tempDownloadDir);
         }
     } catch (err) {
-        log(`\x1b[31mFailed to process folder from ${url}:\x1b[0m ${err.message}`);
+        log(`Failed to process folder from ${url}: ${err.message}`, {
+            level: 'error',
+            fileName: 'utils/downloader.js',
+            functionName: 'processFolder',
+        });
     }
 }
 
 async function processLink(url, sectionPath, linkName, driver) {
     try {
-        log(`\x1b[35mProcessing link URL:\x1b[0m ${url}`);
+        log(`Processing link URL: ${url}`);
         await driver.get(url);
 
         const linkContentElement = await driver.findElement(By.css(MOODLE_SELECTORS.activityLink));
@@ -179,13 +303,21 @@ async function processLink(url, sectionPath, linkName, driver) {
         const linkFilePath = path.join(sectionPath, linkFileName);
         await fs.promises.writeFile(linkFilePath, linkContent);
 
-        log(`Saved link content to ${linkFilePath}`);
+        log(`Saved link content to ${linkFilePath}`, {
+            level: 'success',
+            fileName: 'utils/downloader.js',
+            functionName: 'processLink',
+        });
     } catch (err) {
-        log(`\x1b[31mFailed to process link from ${url}:\x1b[0m ${err.message}`);
+        log(`Failed to process link from ${url}: ${err.message}`, {
+            level: 'error',
+            fileName: 'utils/downloader.js',
+            functionName: 'processLink',
+        });
     }
 }
 
-async function downloadFile(url, sectionDir, resourceName, driver, tempDownloadDir, clearDirectory) {
+async function downloadFile(url, sectionDir, resourceName, driver, tempDownloadDir) {
     try {
         clearDirectory(tempDownloadDir);
 
@@ -223,7 +355,11 @@ async function downloadFile(url, sectionDir, resourceName, driver, tempDownloadD
                 limitBytes: MAX_FILE_SIZE_BYTES,
             });
             if (!Number.isNaN(contentLength) && contentLength > MAX_FILE_SIZE_BYTES) {
-                log(`Warnung: Überspringe Download von ${sanitizedFilename} (${(contentLength / (1024 * 1024)).toFixed(2)} MB), da die Datei größer als 100MB ist.`);
+                log(`Warnung: Überspringe Download von ${sanitizedFilename} (${formatBytes(contentLength)}), da die Datei größer als 100MB ist.`, {
+                    level: 'warn',
+                    fileName: 'utils/downloader.js',
+                    functionName: 'downloadFile',
+                });
                 logDownloadSizeDebug('Skipped download due to Content-Length exceeding limit', {
                     url,
                     resourceName,
@@ -271,8 +407,12 @@ async function downloadFile(url, sectionDir, resourceName, driver, tempDownloadD
                     return;
                 }
                 abortedDueToSize = true;
-                const sizeInMb = downloadedBytes / (1024 * 1024);
-                log(`Warnung: Überspringe Download von ${sanitizedFilename} (${sizeInMb.toFixed(2)} MB), da die Datei größer als 100MB ist.`);
+                const sizeInBytes = downloadedBytes;
+                log(`Warnung: Überspringe Download von ${sanitizedFilename} (${formatBytes(sizeInBytes)}), da die Datei größer als 100MB ist.`, {
+                    level: 'warn',
+                    fileName: 'utils/downloader.js',
+                    functionName: 'downloadFile',
+                });
                 logDownloadSizeDebug('Aborted streaming download after exceeding size limit', {
                     url,
                     resourceName,
@@ -320,9 +460,20 @@ async function downloadFile(url, sectionDir, resourceName, driver, tempDownloadD
                         downloadedBytes,
                         limitBytes: MAX_FILE_SIZE_BYTES,
                     });
-                    log(`Downloaded file to ${filePath}`);
+                    log(`Downloaded file to ${filePath}`, {
+                        level: 'info',
+                        fileName: 'utils/downloader.js',
+                        functionName: 'downloadFile',
+                    });
                     await waitForDownloadCompletion(filePath);
-                    await verifyDownload(filePath, url, sectionDir, driver);
+                    await verifyDownload({
+                        filePath,
+                        url,
+                        sectionDir,
+                        resourceName,
+                        driver,
+                        tempDownloadDir,
+                    });
                 })().then(safeResolve).catch(safeReject);
             });
 
@@ -343,7 +494,11 @@ async function downloadFile(url, sectionDir, resourceName, driver, tempDownloadD
             stream.pipe(writer);
         });
     } catch (err) {
-        log(`Failed to download file from ${url}: ${err.message}`);
+        log(`Failed to download file from ${url}: ${err.message}`, {
+            level: 'error',
+            fileName: 'utils/downloader.js',
+            functionName: 'downloadFile',
+        });
     }
 }
 
@@ -354,19 +509,33 @@ async function waitForDownloadCompletion(filePath) {
     }
 }
 
-async function verifyDownload(filePath, url, sectionDir, driver) {
+async function verifyDownload({ filePath, url, sectionDir, resourceName, driver, tempDownloadDir }) {
     try {
         const stats = await fs.promises.stat(filePath);
         if (stats.size > 0) {
-            log(`\x1b[32mIntegrity check passed for file:\x1b[0m ${filePath}`);
-        } else {
-            log(`\x1b[31mIntegrity check failed for file (size 0 bytes):\x1b[0m ${filePath}`);
-            throw new Error(`File ${filePath} has size 0 bytes`);
+            log(`Integrity check passed for file: ${filePath}`, {
+                level: 'success',
+                fileName: 'utils/downloader.js',
+                functionName: 'verifyDownload',
+            });
+            const fileDescriptor = describeFileForUi(filePath, sectionDir, resourceName, url, stats.size);
+            emitUiEvent('download', { file: fileDescriptor });
+            return;
         }
+
+        throw new Error(`File ${filePath} has size 0 bytes`);
     } catch (err) {
-        log(`\x1b[31mIntegrity check failed for file:\x1b[0m ${filePath}. Error: ${err.message}`);
-        log(`Retrying download for ${url}`);
-        await downloadFile(url, sectionDir, resourceName, driver, tempDownloadDir, clearDirectory); // Retry download
+        log(`Integrity check failed for file: ${filePath}. Error: ${err.message}`, {
+            level: 'error',
+            fileName: 'utils/downloader.js',
+            functionName: 'verifyDownload',
+        });
+        log(`Retrying download for ${url}`, {
+            level: 'warn',
+            fileName: 'utils/downloader.js',
+            functionName: 'verifyDownload',
+        });
+        await downloadFile(url, sectionDir, resourceName, driver, tempDownloadDir);
     }
 }
 
