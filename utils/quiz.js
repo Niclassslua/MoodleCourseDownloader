@@ -1,10 +1,11 @@
 const { By, until } = require('selenium-webdriver');
 const fs = require('fs');
 const path = require('path');
-const axios = require('axios');
+const inquirer = require('inquirer').default;
 const { log } = require('./logger');
+const { solveAndSubmitQuiz } = require('./solveQuiz');
 
-async function scrapeQuiz(driver, quizUrl, outputDir) {
+async function scrapeQuiz(driver, quizUrl, outputDir, quizSolverMode = 'prompt') {
     try {
         const currentUrl = await driver.getCurrentUrl();
         log('Navigating to quiz URL.', { quizUrl, currentUrl }, driver);
@@ -18,25 +19,19 @@ async function scrapeQuiz(driver, quizUrl, outputDir) {
         log('Attempt summary status checked.', { attemptSummaryExists: attemptSummary.length > 0 }, driver);
 
         if (attemptSummary.length > 0) {
-            await processAttempts(driver, attemptSummary, outputDir);
+            await processAttempts(driver, attemptSummary, outputDir, quizSolverMode, quizUrl);
         } else {
             log('No previous quiz attempts found. Starting a new attempt.', {}, driver);
-
-            try {
-                const startButton = await driver.findElement(By.css('.singlebutton.quizstartbuttondiv button'));
-                log('Found start button. Clicking to start the attempt.', {}, driver);
-                await startButton.click();
-                log('Attempt started. Extend logic to scrape during the attempt if needed.', {}, driver);
-            } catch (err) {
-                log('Failed to find or click start button.', { error: err.message }, driver);
-            }
+            await handleAttempt(driver, quizUrl, outputDir, quizSolverMode);
         }
     } catch (err) {
         log('Failed to scrape quiz.', { error: err.message }, driver);
     }
 }
 
-async function processAttempts(driver, attemptSummary, outputDir) {
+async function processAttempts(driver, attemptSummary, outputDir, quizSolverMode, quizUrl, options = {}) {
+    const { allowOpenAttempts = true } = options;
+
     try {
         const rows = await driver.findElements(By.css('.generaltable.quizattemptsummary tbody tr'));
         log('Attempt summary rows fetched.', { rowsFound: rows.length }, driver);
@@ -54,20 +49,26 @@ async function processAttempts(driver, attemptSummary, outputDir) {
                 const reviewMessage = await getReviewMessage(row, driver);
                 log(`Review message fetched: ${reviewMessage}`, { rowIndex, reviewMessage }, driver);
 
-                if (reviewMessage.includes("Nicht erlaubt.")) {
+                if (reviewMessage.includes('Nicht erlaubt.')) {
+                    if (!allowOpenAttempts) {
+                        log('Review not allowed and interactive handling suppressed.', { rowIndex }, driver);
+                        continue;
+                    }
+
                     log('Review not allowed. Starting a new attempt.', {}, driver);
-                    await startAndSubmitNewAttempt(driver, quizData, outputDir);
-                    return; // Nach dem neuen Versuch abbrechen, da dieser verarbeitet wird.
+                    await handleAttempt(driver, quizUrl, outputDir, quizSolverMode);
+                    return;
                 }
 
                 if (status === 'In Bearbeitung') {
-                    log('Attempt is in progress. Checking for completion link.', { rowIndex }, driver);
-                    try {
-                        await handleInProgressAttempt(driver, quizData, outputDir);
-                        log('In-progress attempt handled successfully.', { rowIndex }, driver);
-                    } catch (progressErr) {
-                        log('Error handling in-progress attempt.', { rowIndex, error: progressErr.message }, driver);
+                    if (!allowOpenAttempts) {
+                        log('Attempt is in progress but handling is suppressed for this pass.', { rowIndex }, driver);
+                        continue;
                     }
+
+                    log('Attempt is in progress. Offering completion workflow.', { rowIndex }, driver);
+                    await handleAttempt(driver, quizUrl, outputDir, quizSolverMode, { skipStart: true });
+                    return;
                 }
 
                 try {
@@ -96,6 +97,251 @@ async function processAttempts(driver, attemptSummary, outputDir) {
     }
 }
 
+async function handleAttempt(driver, quizUrl, outputDir, quizSolverMode, options = {}) {
+    const { skipStart = false } = options;
+
+    const mode = await resolveQuizSolverMode(quizSolverMode, driver);
+    log('Selected quiz solver mode.', { mode }, driver);
+
+    if (!mode) {
+        log('No solver mode selected. Aborting attempt handling.', {}, driver);
+        return;
+    }
+
+    if (!skipStart) {
+        const started = await startAttempt(driver);
+        if (!started) {
+            return;
+        }
+    } else {
+        await ensureAttemptInterfaceReady(driver);
+    }
+
+    if (mode === 'manual') {
+        await runManualSolve(driver);
+    } else if (mode === 'openai') {
+        await runOpenAiSolve(driver);
+    }
+
+    await refreshAttemptSummary(driver, quizUrl, outputDir, quizSolverMode);
+}
+
+async function startAttempt(driver) {
+    try {
+        const startButton = await driver.findElement(By.css('.singlebutton.quizstartbuttondiv button'));
+        log('Found start button. Clicking to start the attempt.', {}, driver);
+        await startButton.click();
+        await ensureAttemptInterfaceReady(driver);
+        log('Attempt started and question interface detected.', {}, driver);
+        return true;
+    } catch (err) {
+        log('Failed to find or click start button.', { error: err.message }, driver);
+        return false;
+    }
+}
+
+async function ensureAttemptInterfaceReady(driver) {
+    try {
+        await driver.wait(until.elementLocated(By.css('.que')), 10000);
+    } catch (err) {
+        log('Question elements did not load in time.', { error: err.message }, driver);
+        throw err;
+    }
+}
+
+async function resolveQuizSolverMode(preferredMode = 'prompt') {
+    const normalized = typeof preferredMode === 'string' ? preferredMode.toLowerCase() : 'prompt';
+
+    if (normalized === 'manual' || normalized === 'openai') {
+        return normalized;
+    }
+
+    if (!process.stdin.isTTY || !process.stdout.isTTY) {
+        log('TTY not available for interactive quiz solver selection. Defaulting to manual mode.');
+        return 'manual';
+    }
+
+    try {
+        const { mode } = await inquirer.prompt([
+            {
+                type: 'list',
+                name: 'mode',
+                message: 'Wie soll der Quiz-Versuch behandelt werden?',
+                choices: [
+                    { name: 'Ich löse den Versuch manuell im Browser', value: 'manual' },
+                    { name: 'OpenAI API soll den Versuch automatisch lösen', value: 'openai' },
+                ],
+            },
+        ]);
+
+        return mode;
+    } catch (err) {
+        log('Quiz solver prompt aborted. Defaulting to manual mode.', { error: err.message });
+        return 'manual';
+    }
+}
+
+async function runManualSolve(driver) {
+    log('Manual quiz solving selected. Complete the attempt in the browser and submit it.', {}, driver);
+
+    if (process.stdin.isTTY && process.stdout.isTTY) {
+        await inquirer.prompt([
+            {
+                type: 'confirm',
+                name: 'completed',
+                message: 'Hast du den Versuch abgegeben und befindest dich wieder auf der Zusammenfassungsseite?',
+                default: true,
+            },
+        ]);
+    } else {
+        log('TTY not available for confirmation prompt. Pausing briefly before continuing.', {}, driver);
+        await driver.sleep(15000);
+    }
+}
+
+async function runOpenAiSolve(driver) {
+    try {
+        const questions = await collectAttemptQuestions(driver);
+
+        if (!questions.length) {
+            log('No questions detected in attempt. Cannot invoke OpenAI solver.', {}, driver);
+            return;
+        }
+
+        await solveAndSubmitQuiz(driver, questions);
+        await finalizeAttempt(driver);
+    } catch (err) {
+        log('Failed to solve quiz attempt via OpenAI.', { error: err.message }, driver);
+    }
+}
+
+async function collectAttemptQuestions(driver) {
+    const questions = [];
+
+    try {
+        const questionElements = await driver.findElements(By.css('.que'));
+        log('Collecting question data for OpenAI solver.', { count: questionElements.length }, driver);
+
+        for (const questionElement of questionElements) {
+            const questionId = await questionElement.getAttribute('id');
+            const questionTypeClass = await questionElement.getAttribute('class');
+            const questionType = questionTypeClass.match(/que\s(\w+)/)?.[1] || 'unknown';
+            const questionTextElement = await questionElement.findElement(By.css('.qtext'));
+            const questionText = await questionTextElement.getText();
+
+            const questionData = {
+                id: questionId,
+                type: questionType,
+                text: questionText,
+            };
+
+            if (questionType === 'match') {
+                const rows = await questionElement.findElements(By.css('.answer tbody tr'));
+                const answers = [];
+                const optionsSet = new Set();
+
+                for (const row of rows) {
+                    const fieldElement = await row.findElement(By.css('td.text'));
+                    const fieldText = (await fieldElement.getText()).trim();
+                    const selectElement = await row.findElement(By.css('select'));
+                    const optionElements = await selectElement.findElements(By.css('option'));
+                    const optionTexts = [];
+
+                    for (const optionElement of optionElements) {
+                        const optionText = (await optionElement.getText()).trim();
+                        if (optionText) {
+                            optionTexts.push(optionText);
+                            optionsSet.add(optionText);
+                        }
+                    }
+
+                    let selectedOption = '';
+                    try {
+                        const selectedOptionElement = await selectElement.findElement(By.css('option[selected="selected"]'));
+                        selectedOption = (await selectedOptionElement.getText()).trim();
+                    } catch (err) {
+                        // No preselection is expected before the question is answered.
+                    }
+
+                    answers.push({ field: fieldText, selectedOption, options: optionTexts });
+                }
+
+                questionData.answers = answers;
+                questionData.choicePool = Array.from(optionsSet);
+            } else if (questionType === 'multichoice') {
+                const answerElements = await questionElement.findElements(By.css('.answer .r0, .answer .r1'));
+                const answers = [];
+
+                for (const [index, answerElement] of answerElements.entries()) {
+                    let labelText = '';
+                    try {
+                        const labelElement = await answerElement.findElement(By.css('div[data-region="answer-label"]'));
+                        labelText = await labelElement.getText();
+                    } catch (err) {
+                        try {
+                            labelText = await answerElement.getText();
+                        } catch (fallbackErr) {
+                            log('Failed to extract label text for choice answer.', { error: err.message, fallbackError: fallbackErr.message }, driver);
+                        }
+                    }
+
+                    answers.push({ text: labelText.trim(), value: String.fromCharCode(65 + index) });
+                }
+
+                questionData.answers = answers;
+                questionData.choiceType = await detectChoiceType(questionElement, driver);
+            } else {
+                log('Encountered unsupported question type during collection.', { questionType }, driver);
+            }
+
+            questions.push(questionData);
+        }
+    } catch (err) {
+        log('Error while collecting attempt questions.', { error: err.message }, driver);
+    }
+
+    return questions;
+}
+
+async function finalizeAttempt(driver) {
+    try {
+        const finishLinkElement = await driver.wait(until.elementLocated(By.css('.endtestlink')), 10000);
+        const finishUrl = await finishLinkElement.getAttribute('href');
+        log('Found completion link.', { finishUrl }, driver);
+
+        await driver.get(finishUrl);
+        log('Navigated to summary page to complete the quiz.', {}, driver);
+
+        await submitQuiz(driver);
+
+        try {
+            await driver.wait(until.elementLocated(By.css('.generaltable.quizattemptsummary')), 10000);
+        } catch (summaryErr) {
+            log('Quiz summary did not appear after submission within expected time.', { error: summaryErr.message }, driver);
+        }
+    } catch (err) {
+        log('Failed to handle in-progress attempt.', { error: err.message }, driver);
+    }
+}
+
+async function refreshAttemptSummary(driver, quizUrl, outputDir, quizSolverMode, options = {}) {
+    const { skipReload = false } = options;
+
+    let attemptSummary = await driver.findElements(By.css('.generaltable.quizattemptsummary'));
+
+    if (!attemptSummary.length && !skipReload) {
+        await driver.get(quizUrl);
+        attemptSummary = await driver.findElements(By.css('.generaltable.quizattemptsummary'));
+    }
+
+    if (!attemptSummary.length) {
+        log('Attempt summary table not found after returning to quiz.', {}, driver);
+        return;
+    }
+
+    await processAttempts(driver, attemptSummary, outputDir, quizSolverMode, quizUrl, { allowOpenAttempts: false });
+}
+
 async function getReviewMessage(row, driver) {
     try {
         const reviewCell = await row.findElement(By.css('td:last-child'));
@@ -104,20 +350,6 @@ async function getReviewMessage(row, driver) {
     } catch (err) {
         log('Error fetching review message.', { error: err.message }, driver);
         return '';
-    }
-}
-
-async function startAndSubmitNewAttempt(driver, quizData, outputDir) {
-    try {
-        const startButton = await driver.findElement(By.css('.singlebutton.quizstartbuttondiv button'));
-        log('Found start button for new attempt.', {}, driver);
-        await startButton.click();
-        log('New attempt started.', {}, driver);
-
-        await handleInProgressAttempt(driver, quizData, outputDir);
-        log('New attempt submitted and processed.', {}, driver);
-    } catch (err) {
-        log('Failed to start and submit a new attempt.', { error: err.message }, driver);
     }
 }
 
@@ -130,47 +362,6 @@ async function getStatus(row, driver) {
     } catch (err) {
         log('Error fetching row status.', { error: err.message }, driver);
         throw err;
-    }
-}
-
-async function handleInProgressAttempt(driver, quizData, outputDir) {
-    try {
-        const finishLinkElement = await driver.wait(until.elementLocated(By.css('.endtestlink')), 10000);
-        const finishUrl = await finishLinkElement.getAttribute('href');
-        log('Found completion link.', { finishUrl }, driver);
-
-        await driver.get(finishUrl);
-        log('Navigated to summary page to complete the quiz.', {}, driver);
-
-        await submitQuiz(driver);
-        await extractQuizResults(driver, quizData, outputDir);
-    } catch (err) {
-        log('Failed to handle in-progress attempt.', { error: err.message }, driver);
-    }
-}
-
-async function submitQuiz(driver) {
-    try {
-        // Warte auf das Formular mit der ID 'frm-finishattempt'
-        const finishForm = await driver.wait(until.elementLocated(By.css('#frm-finishattempt')), 10000);
-        log('Finish attempt form found.', {}, driver);
-
-        // Klicke auf den Submit-Button des Formulars
-        const finishButton = await finishForm.findElement(By.css('button[type="submit"]'));
-        await finishButton.click();
-        log('Clicked submit button in the form.', {}, driver);
-
-        // Warte, bis das Modal erscheint
-        const modal = await driver.wait(until.elementLocated(By.css('.modal-dialog')), 5000);
-        log('Submission modal detected.', {}, driver);
-
-        // Klicke auf den "Abgeben"-Button im Modal
-        const modalSubmitButton = await modal.findElement(By.css('.modal-footer .btn-primary[data-action="save"]'));
-        await modalSubmitButton.click();
-        log('Clicked "Submit" button in modal.', {}, driver);
-
-    } catch (err) {
-        log('Failed to submit the quiz.', { error: err.message }, driver);
     }
 }
 
@@ -194,14 +385,12 @@ async function processAttemptLink(driver, row, quizData, outputDir) {
 
 async function extractQuizResults(driver, quizData, outputDir) {
     try {
-        // Quiz-Titel aus Breadcrumb extrahieren
         const breadcrumbLink = await driver.findElement(By.css('.breadcrumb-item a[aria-current="page"]'));
         const quizTitle = await breadcrumbLink.getText();
-        const sanitizedQuizTitle = quizTitle.replace(/[^a-zA-Z0-9-_]/g, '_'); // Für Dateinamen
+        const sanitizedQuizTitle = quizTitle.replace(/[^a-zA-Z0-9-_]/g, '_');
 
         log('Extracted quiz title.', { quizTitle, sanitizedQuizTitle });
 
-        // Alle Fragen erneut abrufen, bevor sie verarbeitet werden
         const questions = await driver.wait(until.elementsLocated(By.css('.que')), 10000);
         log('Found questions.', { count: questions.length });
 
@@ -244,7 +433,6 @@ async function extractQuizResults(driver, quizData, outputDir) {
 async function extractQuestionData(question, driver) {
     const questionData = {};
     try {
-        // Frage-ID und Typ
         const questionId = await question.getAttribute('id');
         const questionTypeClass = await question.getAttribute('class');
         const questionType = questionTypeClass.match(/que\s(\w+)/)?.[1] || 'unknown';
@@ -252,29 +440,29 @@ async function extractQuestionData(question, driver) {
         questionData.id = questionId;
         questionData.type = questionType;
 
-        // Fragetext
         const questionTextElement = await question.findElement(By.css('.qtext'));
         questionData.text = await questionTextElement.getText();
         log('Question text fetched.', { id: questionId, text: questionData.text }, driver);
 
-        // Extrahiere Antworten basierend auf Fragetyp
         if (questionType === 'match') {
             questionData.answers = await extractMatchAnswers(question, driver);
         } else if (questionType === 'multichoice') {
             questionData.answers = await extractMultipleChoiceAnswers(question, driver);
-            questionData.choiceType = await detectChoiceType(question, driver); // "single" oder "multiple"
+            questionData.choiceType = await detectChoiceType(question, driver);
         } else {
             log('Unhandled question type.', { type: questionType }, driver);
         }
 
-        // Feedback oder richtige Antworten
         try {
             const feedbackElement = await question.findElement(By.css('.rightanswer'));
             const rightAnswerText = await feedbackElement.getText();
             if (rightAnswerText.startsWith('Die richtige Antwort ist:')) {
                 questionData.correctAnswer = rightAnswerText.replace('Die richtige Antwort ist: ', '').trim();
             } else if (rightAnswerText.startsWith('Die richtigen Antworten sind:')) {
-                questionData.correctAnswers = rightAnswerText.replace('Die richtigen Antworten sind: ', '').split(',').map(a => a.trim());
+                questionData.correctAnswers = rightAnswerText
+                    .replace('Die richtigen Antworten sind: ', '')
+                    .split(',')
+                    .map(a => a.trim());
             }
         } catch (err) {
             log('No feedback or right answer found for the question.', { id: questionId }, driver);
@@ -295,10 +483,14 @@ async function extractMatchAnswers(question, driver) {
             const fieldElement = await row.findElement(By.css('td.text'));
             const fieldText = await fieldElement.getText();
 
-            const selectedOptionElement = await row.findElement(By.css('select option[selected="selected"]'));
-            const selectedOption = await selectedOptionElement.getText();
+            let selectedOption = '';
+            try {
+                const selectedOptionElement = await row.findElement(By.css('select option[selected="selected"]'));
+                selectedOption = await selectedOptionElement.getText();
+            } catch (err) {
+                log('No selected option found while extracting match answers.', { error: err.message }, driver);
+            }
 
-            log('Parsed match answer.', { field: fieldText, selectedOption }, driver);
             answers.push({ field: fieldText, selectedOption });
         }
     } catch (err) {
@@ -331,11 +523,35 @@ async function extractMultipleChoiceAnswers(question, driver) {
 async function detectChoiceType(question, driver) {
     try {
         const inputs = await question.findElements(By.css('.answer input[type="radio"], .answer input[type="checkbox"]'));
+        if (!inputs.length) {
+            return 'unknown';
+        }
         const inputType = await inputs[0].getAttribute('type');
         return inputType === 'radio' ? 'single' : 'multiple';
     } catch (err) {
         log('Error detecting choice type.', { error: err.message }, driver);
         return 'unknown';
+    }
+}
+
+async function submitQuiz(driver) {
+    try {
+        const finishForm = await driver.wait(until.elementLocated(By.css('#frm-finishattempt')), 10000);
+        log('Finish attempt form found.', {}, driver);
+
+        const finishButton = await finishForm.findElement(By.css('button[type="submit"]'));
+        await finishButton.click();
+        log('Clicked submit button in the form.', {}, driver);
+
+        const modal = await driver.wait(until.elementLocated(By.css('.modal-dialog')), 5000);
+        log('Submission modal detected.', {}, driver);
+
+        const modalSubmitButton = await modal.findElement(By.css('.modal-footer .btn-primary[data-action="save"]'));
+        await modalSubmitButton.click();
+        log('Clicked "Submit" button in modal.', {}, driver);
+    } catch (err) {
+        log('Failed to submit the quiz.', { error: err.message }, driver);
+        throw err;
     }
 }
 

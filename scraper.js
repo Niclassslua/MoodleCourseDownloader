@@ -35,6 +35,12 @@ const argv = yargs(hideBin(process.argv))
             default: 'all',
             describe: 'Download-Modus: all, resources-only, forums-only, quizzes-only'
         },
+        quizSolverMode: {
+            type: 'string',
+            choices: ['prompt', 'manual', 'openai'],
+            default: 'prompt',
+            describe: 'Steuert, ob Quiz-Versuche manuell, automatisch über OpenAI oder nach Rückfrage gelöst werden'
+        },
         enableNotifications: { type: 'boolean', default: false, describe: 'Benachrichtigungen bei neuen Ressourcen aktivieren' },
         manualDownload: { type: 'boolean', default: false, describe: 'Manuellen Downloadmodus aktivieren' },
         keepBrowserOpen: { type: 'boolean', default: false, describe: 'Browser nach Abschluss offen halten' },
@@ -434,7 +440,7 @@ async function downloadSingleCourse(driver, courseUrl, outputDir, downloadMode, 
         const coursePath = path.join(outputDir, sanitizeFilename(courseTitle));
         createDirectories([coursePath]);
 
-        const { downloadList } = await enumerateDownloads(driver, coursePath, downloadMode);
+        const { downloadList } = await enumerateDownloads(driver, coursePath, downloadMode, argv.quizSolverMode);
 
         log(`Starte manuellen Download für den Kurs: ${courseTitle}`);
         await processDownloadQueue(downloadList, argv.maxConcurrentDownloads, driver, tempDownloadDir);
@@ -454,7 +460,7 @@ async function syncCourse(driver, courseConfig) {
 
         const previousState = loadCourseState(coursePath);
 
-        const { downloadList, currentState } = await enumerateDownloads(driver, coursePath, downloadMode);
+        const { downloadList, currentState } = await enumerateDownloads(driver, coursePath, downloadMode, argv.quizSolverMode);
 
         const newResources = getNewResources(previousState, currentState);
 
