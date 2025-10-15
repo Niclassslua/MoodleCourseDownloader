@@ -52,8 +52,41 @@ const tempDownloadDir = path.join(__dirname, 'temp-downloads');
 createDirectories([tempDownloadDir]);
 
 const options = new chrome.Options();
-const CHROME_BINARY="/Applications/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing"
-options.setChromeBinaryPath(CHROME_BINARY);
+
+function resolveChromeBinary() {
+    const envBinary = process.env.MCD_CHROME_BINARY || process.env.CHROME_BINARY;
+    if (envBinary && fs.existsSync(envBinary)) {
+        return envBinary;
+    }
+
+    const platform = process.platform;
+    const candidates = [];
+
+    if (platform === 'darwin') {
+        candidates.push('/Applications/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing');
+        candidates.push('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome');
+    } else if (platform === 'win32') {
+        candidates.push('C:/Program Files/Google/Chrome/Application/chrome.exe');
+        candidates.push('C:/Program Files (x86)/Google/Chrome/Application/chrome.exe');
+    } else {
+        candidates.push('/usr/bin/google-chrome');
+        candidates.push('/usr/bin/chromium');
+        candidates.push('/usr/bin/chromium-browser');
+    }
+
+    for (const candidate of candidates) {
+        if (fs.existsSync(candidate)) {
+            return candidate;
+        }
+    }
+
+    return null;
+}
+
+const chromeBinary = resolveChromeBinary();
+if (chromeBinary) {
+    options.setChromeBinaryPath(chromeBinary);
+}
 options.addArguments('--disable-gpu', '--no-sandbox');
 options.setUserPreferences({
     'download.default_directory': tempDownloadDir,
