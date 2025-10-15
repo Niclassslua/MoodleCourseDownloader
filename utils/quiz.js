@@ -278,7 +278,11 @@ async function collectAttemptQuestions(driver) {
                         const labelElement = await answerElement.findElement(By.css('div[data-region="answer-label"]'));
                         labelText = await labelElement.getText();
                     } catch (err) {
-                        log('Failed to extract label text for choice answer.', { error: err.message }, driver);
+                        try {
+                            labelText = await answerElement.getText();
+                        } catch (fallbackErr) {
+                            log('Failed to extract label text for choice answer.', { error: err.message, fallbackError: fallbackErr.message }, driver);
+                        }
                     }
 
                     answers.push({ text: labelText.trim(), value: String.fromCharCode(65 + index) });
