@@ -91,7 +91,7 @@ async function solveAndSubmitQuiz(driver, questions) {
         `.trim();
 
         const response = await openai.chat.completions.create({
-            model: 'gpt-3.5-turbo',
+            model: 'gpt-4.1',
             messages: [
                 { role: 'system', content: systemPrompt },
                 { role: 'user', content: userPrompt },
