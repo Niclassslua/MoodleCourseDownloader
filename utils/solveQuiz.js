@@ -363,6 +363,30 @@ async function handleChoiceQuestion(driver, question, answer) {
             return false;
         }
 
+        const locateChoiceInput = async (container) => {
+            const interactiveInputs = await container.findElements(
+                By.css('input[type="radio"], input[type="checkbox"]')
+            );
+
+            for (const input of interactiveInputs) {
+                // Selenium cannot click hidden inputs directly. Prefer elements that are displayed,
+                // but fall back to the first available one in case visibility detection fails.
+                if (await input.isDisplayed()) {
+                    return input;
+                }
+            }
+
+            if (interactiveInputs.length) {
+                return interactiveInputs[0];
+            }
+
+            // Some Moodle themes wrap the checkbox in a label without exposing it directly.
+            const labelInputs = await container.findElements(
+                By.css('label input[type="radio"], label input[type="checkbox"]')
+            );
+            return labelInputs.length ? labelInputs[0] : null;
+        };
+
         if (isMultiple) {
             const desired = new Set(normalized);
             let changed = false;
@@ -370,11 +394,21 @@ async function handleChoiceQuestion(driver, question, answer) {
             for (let index = 0; index < answers.length; index += 1) {
                 const letter = String.fromCharCode(65 + index);
                 const shouldSelect = desired.has(letter);
-                const input = await answers[index].findElement(By.css('input'));
+                const input = await locateChoiceInput(answers[index]);
+
+                if (!input) {
+                    log('No selectable checkbox/radio found for option.', { questionId: question.id, letter });
+                    continue;
+                }
+
                 const currentlySelected = await input.isSelected();
 
                 if (shouldSelect !== currentlySelected) {
-                    await input.click();
+                    try {
+                        await input.click();
+                    } catch (clickErr) {
+                        await driver.executeScript('arguments[0].click();', input);
+                    }
                     log(shouldSelect ? 'Answer selected.' : 'Answer deselected.', { questionId: question.id, letter });
                     changed = true;
                 }
@@ -395,10 +429,18 @@ async function handleChoiceQuestion(driver, question, answer) {
             return false;
         }
 
-        const input = await answers[index].findElement(By.css('input'));
+        const input = await locateChoiceInput(answers[index]);
+        if (!input) {
+            log('No selectable radio found for single-choice option.', { questionId: question.id, letter });
+            return false;
+        }
         const alreadySelected = await input.isSelected();
         if (!alreadySelected) {
-            await input.click();
+            try {
+                await input.click();
+            } catch (clickErr) {
+                await driver.executeScript('arguments[0].click();', input);
+            }
             log('Answer selected.', { questionId: question.id, letter });
             return true;
         }
