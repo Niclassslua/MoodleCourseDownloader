@@ -10,9 +10,13 @@ const MOODLE_SELECTORS = {
     section: 'li.section',
     sectionAriaLabel: 'aria-label',
     sectionHeader: 'h3.sectionname',
-    activity: '.activity',
+    activity: 'li.activity, li.activity-wrapper',
+    activitySelectors: [
+        'li[data-for="cmitem"]',
+        '[data-for="cmlist"] > li',
+    ],
     activityName: '.instancename, .activityname, [data-region="activityname"]',
-    activityLink: 'a.aalink, .activityinstance a, .activity-item a.aalink',
+    activityLink: 'a.aalink, .activityinstance a, .activity-item a.aalink, .activityname a',
     sectionTitleSelectors: [
         'h3.sectionname',
         'h3.sectionname span',

@@ -99,4 +99,44 @@ describe('parseBatchResponse', () => {
 
         expect(parsed).toEqual([['B']]);
     });
+
+    it('extracts answers from fenced JSON and coerces single values', () => {
+        const questions = [
+            {
+                id: 'question-single-1',
+                type: 'single',
+                text: 'Welche Option ist korrekt?',
+                answers: [
+                    { text: 'Option A', value: 'A' },
+                    { text: 'Option B', value: 'B' },
+                ],
+                choiceType: 'single',
+            },
+            {
+                id: 'question-match-1',
+                type: 'match',
+                answers: [
+                    { field: 'Term 1', options: ['Definition 1', 'Definition 2'] },
+                ],
+            },
+        ];
+
+        const responseContent = [
+            '```json',
+            '{',
+            '  "answers": [',
+            '    { "id": "question-single-1", "response": "b" },',
+            '    { "id": "question-match-1", "response": { "field": "Term 1", "selectedOption": "Definition 2" } }',
+            '  ]',
+            '}',
+            '```',
+        ].join('\n');
+
+        const parsed = parseBatchResponse(responseContent, questions);
+
+        expect(parsed).toEqual([
+            ['B'],
+            [{ field: 'Term 1', selectedOption: 'Definition 2' }],
+        ]);
+    });
 });
