@@ -7,6 +7,196 @@ const { log } = require('./logger');
 const { solveAndSubmitQuiz } = require('./solveQuiz');
 const { clickNextIfPossible } = require('./quizNav');
 
+const MARK_HEADING_COLOR = '#D32E0FA6';
+const CORRECT_ANSWER_COLOR = '#92d050';
+
+function normalizeMultiline(text = '') {
+    return text
+        .replace(/\r\n/g, '\n')
+        .replace(/\u00a0/g, ' ')
+        .replace(/\n{3,}/g, '\n\n')
+        .trim();
+}
+
+function normalizeInline(text = '') {
+    return text.replace(/\s+/g, ' ').replace(/\u00a0/g, ' ').trim();
+}
+
+function stripAnswerPrefix(text = '') {
+    return text.replace(/^\s*[a-z]\.?\s*/i, '').trim();
+}
+
+function cleanAnswerValue(value = '') {
+    let cleaned = value.replace(/\s+/g, ' ').trim();
+    cleaned = cleaned.replace(/^[„“"'`«]+/, '');
+    cleaned = cleaned.replace(/[”"'`»]+$/, '');
+    cleaned = cleaned.replace(/[\.。]+$/, '').trim();
+    return cleaned;
+}
+
+function normalizeForComparison(value = '') {
+    return stripAnswerPrefix(cleanAnswerValue(value)).toLowerCase();
+}
+
+function collectCorrectAnswerSet(question) {
+    const correctSet = new Set();
+
+    const add = (entry) => {
+        if (!entry) {
+            return;
+        }
+        const normalized = normalizeForComparison(entry);
+        if (normalized) {
+            correctSet.add(normalized);
+        }
+    };
+
+    if (Array.isArray(question?.correctAnswers) && question.correctAnswers.length) {
+        for (const answer of question.correctAnswers) {
+            add(answer);
+        }
+    } else if (typeof question?.correctAnswer === 'string' && question.correctAnswer.trim()) {
+        const parts = question.correctAnswer.split(/[,;]\s*/);
+        if (parts.length > 1) {
+            for (const part of parts) {
+                add(part);
+            }
+        } else {
+            add(question.correctAnswer);
+        }
+    }
+
+    return correctSet;
+}
+
+function formatExplanation(question) {
+    const pieces = [];
+
+    if (typeof question?.feedback === 'string' && question.feedback.trim()) {
+        pieces.push(question.feedback.trim());
+    }
+
+    if (typeof question?.generalFeedback === 'string' && question.generalFeedback.trim()) {
+        pieces.push(question.generalFeedback.trim());
+    }
+
+    if (!pieces.length) {
+        if (Array.isArray(question?.correctAnswers) && question.correctAnswers.length) {
+            pieces.push(`Die richtigen Antworten sind: ${question.correctAnswers.join(', ')}`);
+        } else if (typeof question?.correctAnswer === 'string' && question.correctAnswer.trim()) {
+            pieces.push(`Die richtige Antwort ist: ${question.correctAnswer.trim()}`);
+        }
+    }
+
+    if (!pieces.length) {
+        return '';
+    }
+
+    return pieces
+        .map((entry) => normalizeMultiline(entry))
+        .filter(Boolean)
+        .join('\n\n');
+}
+
+function formatAnswerList(question) {
+    const answers = Array.isArray(question?.answers) ? question.answers : [];
+
+    if (!answers.length) {
+        return [];
+    }
+
+    const correctSet = collectCorrectAnswerSet(question);
+
+    return answers
+        .map((answer) => {
+            const label = normalizeInline(answer?.label || '');
+            const text = normalizeMultiline(answer?.text || '');
+            const parts = [];
+            if (label) {
+                parts.push(label);
+            }
+            if (text) {
+                parts.push(text);
+            }
+            let display = parts.join(' ');
+            if (!display) {
+                display = normalizeMultiline(answer?.display || '');
+            }
+            if (!display) {
+                const field = normalizeMultiline(answer?.field || '');
+                const selectedOption = normalizeMultiline(answer?.selectedOption || answer?.selected || '');
+                if (field && selectedOption) {
+                    display = `${field} → ${selectedOption}`;
+                } else if (field) {
+                    display = field;
+                } else if (selectedOption) {
+                    display = selectedOption;
+                }
+            }
+            if (!display) {
+                return null;
+            }
+
+            const normalizedDisplay = normalizeForComparison(display);
+            const normalizedText = normalizeForComparison(text || display);
+            const isMarkedCorrect = Boolean(answer?.isMarkedCorrect);
+            const isCorrect =
+                isMarkedCorrect ||
+                correctSet.has(normalizedDisplay) ||
+                correctSet.has(normalizedText);
+
+            const formatted = isCorrect
+                ? `<font color="${CORRECT_ANSWER_COLOR}">**${display}**</font>`
+                : display;
+
+            return `- ${formatted}`;
+        })
+        .filter(Boolean);
+}
+
+function formatQuizMarkdown(quizTitle, questions) {
+    if (!Array.isArray(questions) || !questions.length) {
+        return '';
+    }
+
+    const lines = [];
+
+    if (quizTitle) {
+        lines.push(`# ${normalizeMultiline(quizTitle)}`);
+        lines.push('');
+    }
+
+    questions.forEach((question, index) => {
+        const number = question?.number || question?.qno || String(index + 1);
+        lines.push(`# <mark style="background: ${MARK_HEADING_COLOR};">Frage ${number}</mark>`);
+        lines.push('');
+
+        const questionText = normalizeMultiline(question?.text || '');
+        if (questionText) {
+            lines.push(questionText);
+            lines.push('');
+        }
+
+        const answers = formatAnswerList(question);
+        if (answers.length) {
+            lines.push(...answers);
+            lines.push('');
+        }
+
+        const explanation = formatExplanation(question);
+        if (explanation) {
+            lines.push('> **Begründung:**');
+            lines.push(...explanation.split('\n').map((line) => `> ${line}`));
+            lines.push('');
+        }
+
+        lines.push('<br>');
+        lines.push('<br>');
+    });
+
+    return lines.join('\n');
+}
+
 /**
  * Main entry for scraping/solving a Moodle quiz.
  */
@@ -44,7 +234,6 @@ async function processAttempts(driver, attemptSummary, outputDir, quizSolverMode
         const rows = await driver.findElements(By.css('.generaltable.quizattemptsummary tbody tr'));
         log('Attempt summary rows fetched.', { rowsFound: rows.length }, driver);
 
-        const quizData = [];
         let attemptFound = false;
 
         for (const [rowIndex, row] of rows.entries()) {
@@ -80,7 +269,7 @@ async function processAttempts(driver, attemptSummary, outputDir, quizSolverMode
                 }
 
                 try {
-                    const linkProcessed = await processAttemptLink(driver, row, quizData, outputDir);
+                    const linkProcessed = await processAttemptLink(driver, row, outputDir);
                     log('Attempt link processed.', { rowIndex, linkProcessed }, driver);
 
                     if (linkProcessed) {
@@ -706,7 +895,7 @@ async function getStatus(row, driver) {
     }
 }
 
-async function processAttemptLink(driver, row, quizData, outputDir) {
+async function processAttemptLink(driver, row, outputDir) {
     try {
         const attemptLink = await row.findElement(By.css('a[title*="Überprüfung"]')).getAttribute('href');
         log('Attempt review link found.', { attemptLink }, driver);
@@ -715,7 +904,7 @@ async function processAttemptLink(driver, row, quizData, outputDir) {
         await driver.get(attemptLink);
 
         log('Extracting results from the review page.', {}, driver);
-        await extractQuizResults(driver, quizData, outputDir);
+        await extractQuizResults(driver, outputDir);
 
         return true;
     } catch (err) {
@@ -727,7 +916,7 @@ async function processAttemptLink(driver, row, quizData, outputDir) {
 /**
  * Extract the graded results from a finished attempt review page.
  */
-async function extractQuizResults(driver, quizData, outputDir) {
+async function extractQuizResults(driver, outputDir) {
     try {
         const breadcrumbLink = await driver.findElement(By.css('.breadcrumb-item a[aria-current="page"]'));
         const quizTitle = await breadcrumbLink.getText();
@@ -737,6 +926,8 @@ async function extractQuizResults(driver, quizData, outputDir) {
 
         const questions = await driver.wait(until.elementsLocated(By.css('.que')), 10000);
         log('Found questions.', { count: questions.length });
+
+        const quizData = [];
 
         for (let i = 0; i < questions.length; i++) {
             try {
@@ -763,12 +954,25 @@ async function extractQuizResults(driver, quizData, outputDir) {
         }
 
         // Use a robust write path
-        const filePath = path.join(outputDir, `${sanitizedQuizTitle}.json`);
+        const jsonPath = path.join(outputDir, `${sanitizedQuizTitle}.json`);
         try {
-            fs.writeFileSync(filePath, JSON.stringify({ quizTitle, questions: quizData }, null, 2));
-            log('Quiz data saved successfully.', { path: filePath });
+            fs.writeFileSync(jsonPath, JSON.stringify({ quizTitle, questions: quizData }, null, 2));
+            log('Quiz data saved successfully.', { path: jsonPath });
         } catch (err) {
             log('Failed to save quiz data.', { error: err.message });
+        }
+
+        try {
+            const markdown = formatQuizMarkdown(quizTitle, quizData);
+            if (markdown) {
+                const markdownPath = path.join(outputDir, `${sanitizedQuizTitle}.md`);
+                fs.writeFileSync(markdownPath, `${markdown}\n`, { encoding: 'utf8' });
+                log('Quiz markdown saved successfully.', { path: markdownPath });
+            } else {
+                log('Quiz markdown output was empty. Skipping file write.', { quizTitle });
+            }
+        } catch (err) {
+            log('Failed to generate quiz markdown output.', { error: err.message });
         }
     } catch (err) {
         log('Failed to extract quiz results.', { error: err.message });
@@ -785,6 +989,16 @@ async function extractQuestionData(question, driver) {
         questionData.id = questionId;
         questionData.type = questionType;
 
+        try {
+            const qnoElement = await question.findElement(By.css('.info .qno'));
+            questionData.number = await qnoElement.getText();
+        } catch {}
+
+        try {
+            const stateElement = await question.findElement(By.css('.info .state'));
+            questionData.state = await stateElement.getText();
+        } catch {}
+
         const questionTextElement = await question.findElement(By.css('.qtext'));
         questionData.text = await questionTextElement.getText();
         log('Question text fetched.', { id: questionId, text: questionData.text }, driver);
@@ -799,15 +1013,63 @@ async function extractQuestionData(question, driver) {
         }
 
         try {
+            const feedbackElement = await question.findElement(By.css('.specificfeedback'));
+            const feedbackText = await feedbackElement.getText();
+            if (feedbackText && feedbackText.trim()) {
+                questionData.feedback = feedbackText.trim();
+            }
+        } catch {}
+
+        try {
+            const generalFeedbackElement = await question.findElement(By.css('.generalfeedback'));
+            const generalFeedbackText = await generalFeedbackElement.getText();
+            if (generalFeedbackText && generalFeedbackText.trim()) {
+                questionData.generalFeedback = generalFeedbackText.trim();
+            }
+        } catch {}
+
+        try {
             const feedbackElement = await question.findElement(By.css('.rightanswer'));
             const rightAnswerText = await feedbackElement.getText();
-            if (rightAnswerText.startsWith('Die richtige Antwort ist:')) {
-                questionData.correctAnswer = rightAnswerText.replace('Die richtige Antwort ist: ', '').trim();
-            } else if (rightAnswerText.startsWith('Die richtigen Antworten sind:')) {
-                questionData.correctAnswers = rightAnswerText
-                    .replace('Die richtigen Antworten sind: ', '')
-                    .split(',')
-                    .map(a => a.trim());
+            const normalizedRightAnswer = rightAnswerText.replace(/\s+/g, ' ').trim();
+
+            const multipleMatch = normalizedRightAnswer.match(/Die richtigen Antworten sind[:\s]*(.*)/i);
+            if (multipleMatch && multipleMatch[1]) {
+                const values = multipleMatch[1]
+                    .split(/[,;]\s*/)
+                    .map((entry) => cleanAnswerValue(entry))
+                    .filter(Boolean);
+                if (values.length) {
+                    questionData.correctAnswers = values;
+                }
+            }
+
+            if (!questionData.correctAnswers || !questionData.correctAnswers.length) {
+                const singleMatch = normalizedRightAnswer.match(/Die richtige Antwort ist[:\s]*(.*)/i);
+                if (singleMatch && singleMatch[1]) {
+                    const answerValue = cleanAnswerValue(singleMatch[1]);
+                    if (answerValue) {
+                        questionData.correctAnswer = answerValue;
+                    }
+                }
+            }
+
+            if (!questionData.correctAnswer && (!questionData.correctAnswers || !questionData.correctAnswers.length)) {
+                const strongElements = await feedbackElement.findElements(By.css('strong'));
+                const strongTexts = [];
+                for (const el of strongElements) {
+                    try {
+                        const value = await el.getText();
+                        if (value && value.trim()) {
+                            strongTexts.push(cleanAnswerValue(value));
+                        }
+                    } catch {}
+                }
+                if (strongTexts.length === 1) {
+                    questionData.correctAnswer = strongTexts[0];
+                } else if (strongTexts.length > 1) {
+                    questionData.correctAnswers = strongTexts.filter(Boolean);
+                }
             }
         } catch (err) {
             log('No feedback or right answer found for the question.', { id: questionId }, driver);
@@ -851,19 +1113,38 @@ async function extractMultipleChoiceAnswers(question, driver) {
         log('Extracting multiple-choice answers.', { questionId: await question.getAttribute('id'), answerCount: answerElements.length }, driver);
 
         for (const answerElement of answerElements) {
-            const isSelected = (await answerElement.getAttribute('class')).includes('correct');
+            const className = await answerElement.getAttribute('class');
+            const isMarkedCorrect = /(^|\s)correct(\s|$)/i.test(className);
             const inputEl = await answerElement.findElement(By.css('input'));
             const isChecked = await inputEl.isSelected();
-            let answerText = '';
+            let labelText = '';
+            let bodyText = '';
             try {
-                const labelElement = await answerElement.findElement(By.css('div[data-region="answer-label"]'));
-                answerText = await labelElement.getText();
+                const labelElement = await answerElement.findElement(By.css('.answernumber'));
+                labelText = await labelElement.getText();
+            } catch {}
+
+            try {
+                const bodyElement = await answerElement.findElement(By.css('[data-region="answer-label"] .flex-fill'));
+                bodyText = await bodyElement.getText();
             } catch {
-                answerText = await answerElement.getText();
+                try {
+                    const fallbackElement = await answerElement.findElement(By.css('div[data-region="answer-label"]'));
+                    bodyText = await fallbackElement.getText();
+                } catch {
+                    bodyText = await answerElement.getText();
+                }
             }
 
-            log('Parsed multiple-choice answer.', { text: answerText.trim(), isSelected, isChecked }, driver);
-            answers.push({ text: answerText.trim(), isSelected, isChecked });
+            const display = normalizeMultiline([labelText, bodyText].filter(Boolean).join(' '));
+            log('Parsed multiple-choice answer.', { text: display, isMarkedCorrect, isChecked }, driver);
+            answers.push({
+                label: labelText,
+                text: bodyText,
+                display,
+                isMarkedCorrect,
+                isChecked,
+            });
         }
     } catch (err) {
         log('Error extracting multiple-choice answers.', { error: err.message }, driver);
@@ -893,16 +1174,38 @@ async function submitQuiz(driver) {
         const finishForm = await driver.wait(until.elementLocated(By.css('#frm-finishattempt')), 10000);
         log('Finish attempt form found.', {}, driver);
 
-        const finishButton = await finishForm.findElement(By.css('button[type="submit"]'));
+        const finishButton = await finishForm.findElement(By.css('button[type="submit"], input[type="submit"]'));
+        await driver.executeScript('arguments[0].scrollIntoView({block:"center"});', finishButton);
         await finishButton.click();
         log('Clicked submit button in the form.', {}, driver);
 
-        const modal = await driver.wait(until.elementLocated(By.css('.modal-dialog')), 5000);
-        log('Submission modal detected.', {}, driver);
+        let modal = null;
+        try {
+            modal = await driver.wait(until.elementLocated(By.css('.modal-dialog')), 5000);
+            try {
+                await driver.wait(until.elementIsVisible(modal), 2000);
+            } catch (visibilityErr) {
+                log('Submission modal located but not reported visible within timeout.', { error: visibilityErr.message }, driver);
+            }
+            log('Submission modal detected.', {}, driver);
+        } catch (modalErr) {
+            log('Submission modal not detected within timeout. Continuing without modal confirmation.', { error: modalErr.message }, driver);
+        }
 
-        const modalSubmitButton = await modal.findElement(By.css('.modal-footer .btn-primary[data-action="save"]'));
-        await modalSubmitButton.click();
-        log('Clicked "Submit" button in modal.', {}, driver);
+        if (modal) {
+            const modalSubmitButton = await modal.findElement(By.css('.modal-footer .btn-primary[data-action="save"]'));
+            await modalSubmitButton.click();
+            log('Clicked "Submit" button in modal.', {}, driver);
+        }
+
+        try {
+            await driver.wait(async () => {
+                const url = await driver.getCurrentUrl();
+                return /\/mod\/quiz\/(review|summary)\.php/.test(url);
+            }, 10000);
+        } catch (waitErr) {
+            log('Post-submission navigation wait timed out.', { error: waitErr.message }, driver);
+        }
     } catch (err) {
         log('Failed to submit the quiz.', { error: err.message }, driver);
         throw err;
