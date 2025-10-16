@@ -70,3 +70,33 @@ describe('solveAndSubmitQuiz (Real OpenAI)', () => {
         expect(mockDriver.findElements).toHaveBeenCalled();
     });
 });
+
+describe('parseBatchResponse', () => {
+    it('normalizes responses for true/false questions', () => {
+        const questions = [
+            {
+                id: 'question-truefalse-1',
+                type: 'truefalse',
+                text: 'Ist die Aussage korrekt?',
+                answers: [
+                    { text: 'Wahr', value: 'A' },
+                    { text: 'Falsch', value: 'B' },
+                ],
+                choiceType: 'single',
+            },
+        ];
+
+        const responseContent = JSON.stringify({
+            answers: [
+                {
+                    id: 'question-truefalse-1',
+                    response: ['b'],
+                },
+            ],
+        });
+
+        const parsed = parseBatchResponse(responseContent, questions);
+
+        expect(parsed).toEqual([['B']]);
+    });
+});

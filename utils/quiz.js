@@ -392,7 +392,7 @@ async function collectAttemptQuestions(driver) {
 
                 questionData.answers = answers;
                 questionData.choicePool = Array.from(optionsSet);
-            } else if (questionType === 'multichoice') {
+            } else if (questionType === 'multichoice' || questionType === 'truefalse') {
                 const answerElements = await questionElement.findElements(By.css('.answer .r0, .answer .r1'));
                 const answers = [];
 
@@ -791,7 +791,7 @@ async function extractQuestionData(question, driver) {
 
         if (questionType === 'match') {
             questionData.answers = await extractMatchAnswers(question, driver);
-        } else if (questionType === 'multichoice') {
+        } else if (questionType === 'multichoice' || questionType === 'truefalse') {
             questionData.answers = await extractMultipleChoiceAnswers(question, driver);
             questionData.choiceType = await detectChoiceType(question, driver);
         } else {

@@ -187,18 +187,20 @@ function generateBatchPrompt(questions) {
                 ].join('\n');
             }
 
-            if (q.type === 'multichoice') {
+            if (q.type === 'multichoice' || q.type === 'truefalse') {
                 const options = q.answers
                     .map((answer, index) => `${String.fromCharCode(65 + index)}. ${answer.text}`)
                     .join('\n');
                 const isMultiple = q.choiceType === 'multiple';
                 const selectionHint = isMultiple
                     ? 'Respond with all correct letters in an array, e.g. ["A", "C"].'
-                    : 'Respond with a single letter inside an array, e.g. ["B"].';
+                    : q.type === 'truefalse'
+                        ? 'Respond with exactly one letter wrapped in an array. "A" always refers to the first option (e.g. Wahr), "B" to the second option (e.g. Falsch).'
+                        : 'Respond with a single letter inside an array, e.g. ["B"].';
 
                 return [
                     header,
-                    `Type: ${isMultiple ? 'multiple choice' : 'single choice'}`,
+                    `Type: ${q.type === 'truefalse' ? 'true/false' : isMultiple ? 'multiple choice' : 'single choice'}`,
                     `Prompt: ${q.text}`,
                     'Options:',
                     options,
@@ -238,7 +240,7 @@ function parseBatchResponse(responseContent, questions) {
                     }));
             }
 
-            if ((q.type === 'multichoice' || q.type === 'single') && Array.isArray(answer.response)) {
+            if ((q.type === 'multichoice' || q.type === 'single' || q.type === 'truefalse') && Array.isArray(answer.response)) {
                 return answer.response
                     .filter((entry) => typeof entry === 'string' && entry.trim().length)
                     .map((entry) => entry.trim().toUpperCase());
