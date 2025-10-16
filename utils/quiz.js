@@ -1,10 +1,14 @@
-const { By, until } = require('selenium-webdriver');
+
+const { By, until, Key } = require('selenium-webdriver');
 const fs = require('fs');
 const path = require('path');
 const inquirer = require('inquirer').default;
 const { log } = require('./logger');
 const { solveAndSubmitQuiz } = require('./solveQuiz');
 
+/**
+ * Main entry for scraping/solving a Moodle quiz.
+ */
 async function scrapeQuiz(driver, quizUrl, outputDir, quizSolverMode = 'prompt') {
     try {
         const currentUrl = await driver.getCurrentUrl();
@@ -29,6 +33,9 @@ async function scrapeQuiz(driver, quizUrl, outputDir, quizSolverMode = 'prompt')
     }
 }
 
+/**
+ * Handle the attempt summary table (review existing attempts or start a new one).
+ */
 async function processAttempts(driver, attemptSummary, outputDir, quizSolverMode, quizUrl, options = {}) {
     const { allowOpenAttempts = true } = options;
 
@@ -97,6 +104,9 @@ async function processAttempts(driver, attemptSummary, outputDir, quizSolverMode
     }
 }
 
+/**
+ * Create or resume an attempt and solve it (manual or OpenAI).
+ */
 async function handleAttempt(driver, quizUrl, outputDir, quizSolverMode, options = {}) {
     const { skipStart = false } = options;
 
@@ -149,6 +159,9 @@ async function ensureAttemptInterfaceReady(driver) {
     }
 }
 
+/**
+ * Decide the solver mode based on user preference / TTY availability.
+ */
 async function resolveQuizSolverMode(preferredMode = 'prompt') {
     const normalized = typeof preferredMode === 'string' ? preferredMode.toLowerCase() : 'prompt';
 
@@ -199,22 +212,129 @@ async function runManualSolve(driver) {
     }
 }
 
+async function hasSelectableInputs(driver) {
+    const { By } = require('selenium-webdriver');
+    const inputs = await driver.findElements(By.css(
+        '.que input[type="radio"]:not([disabled]), .que input[type="checkbox"]:not([disabled]), .que select:not([disabled])'
+    ));
+    return inputs.length > 0;
+}
+
+async function getAttemptContext(driver) {
+    const url = await driver.getCurrentUrl();
+    const m = url.match(/attempt=(\d+)/);
+    const attemptId = m ? m[1] : null;
+    const pageMatch = url.match(/[?&]page=(\d+)/);
+    const page = pageMatch ? parseInt(pageMatch[1], 10) : 0;
+    return { url, attemptId, page };
+}
+
 async function runOpenAiSolve(driver) {
     try {
-        const questions = await collectAttemptQuestions(driver);
+        const seen = new Map(); // key=attemptId|page -> count
 
-        if (!questions.length) {
-            log('No questions detected in attempt. Cannot invoke OpenAI solver.', {}, driver);
-            return;
+        while (true) {
+            const { url, attemptId, page } = await getAttemptContext(driver);
+
+            // 0) Seitentyp prüfen
+            if (/\/mod\/quiz\/summary\.php/.test(url) || /\/mod\/quiz\/review\.php/.test(url)) {
+                await log('Summary/Review reached. Finishing loop.', { url }, driver);
+                break;
+            }
+            if (!/\/mod\/quiz\/attempt\.php/.test(url)) {
+                // Nicht auf einer Attempt-Seite → versuche Finish-Flow
+                await log('Not on attempt page, trying to finish attempt flow.', { url }, driver);
+                await finishAttemptFlow(driver);
+                break;
+            }
+
+            // 1) Anti-Loop (gleiche Attempt-Seite wiederholt)
+            const key = `${attemptId || 'na'}|${page}`;
+            seen.set(key, (seen.get(key) || 0) + 1);
+            if (seen.get(key) >= 3) {
+                await log('Same attempt page repeated 3x. Breaking to avoid submit loop.', { attemptId, page, url }, driver);
+                // versuche sauber zu beenden
+                await finishAttemptFlow(driver);
+                break;
+            }
+
+            // 2) Fragen einsammeln nur wenn Inputs wählbar
+            const selectable = await hasSelectableInputs(driver);
+            let questions = [];
+            if (selectable) {
+                questions = await collectAttemptQuestions(driver);
+            } else {
+                await log('No selectable inputs on this page. Skipping solver.', { url }, driver);
+            }
+
+            if (questions.length) {
+                await log('Solving current page with OpenAI...', { count: questions.length }, driver);
+                // WICHTIG: solveAndSubmitQuiz soll NUR Antworten setzen, NICHT submitten!
+                await solveAndSubmitQuiz(driver, questions);
+            } else {
+                await log('No questions detected (or unsupported) on this page.', { url }, driver);
+            }
+
+            // 3) Nur „Weiter“ versuchen – KEIN zusätzliches Submit / Form-Submit
+            const moved = await clickNextIfPresent(driver);
+            if (moved) {
+                const after = await driver.getCurrentUrl();
+                if (/\/mod\/quiz\/attempt\.php/.test(after)) {
+                    continue; // nächste Seite lösen
+                }
+                if (/\/mod\/quiz\/summary\.php|\/mod\/quiz\/review\.php/.test(after)) {
+                    await log('Reached summary/review after next. Finishing...', {}, driver);
+                    break;
+                }
+            }
+
+            // 4) Kein "Weiter" verfügbar → Versuch beenden (Summary + Modal)
+            await log('No next button present. Finishing attempt...', {}, driver);
+            await finishAttemptFlow(driver);
+            break;
         }
-
-        await solveAndSubmitQuiz(driver, questions);
-        await finalizeAttempt(driver);
     } catch (err) {
         log('Failed to solve quiz attempt via OpenAI.', { error: err.message }, driver);
     }
 }
 
+/**
+ * Persist the current page answers by clicking "Speichern und weiter" or submitting #responseform.
+ */
+async function saveAttemptPage(driver) {
+    try {
+        // Preferred: explicit "Speichern und weiter"
+        const nextBtns = await driver.findElements(By.css('input.mod_quiz-next-nav, button.mod_quiz-next-nav'));
+        if (nextBtns.length) {
+            await driver.executeScript('arguments[0].scrollIntoView({block:"center"});', nextBtns[0]);
+            await driver.sleep(100); // give the browser a moment to settle
+            await nextBtns[0].click();
+            // wait briefly for navigation or save
+            await driver.sleep(600);
+            return true;
+        }
+
+        // Fallback: submit the response form directly
+        const forms = await driver.findElements(By.css('form#responseform'));
+        if (forms.length) {
+            await driver.executeScript(`
+                arguments[0].dispatchEvent(new Event('submit', {bubbles:true}));
+                arguments[0].submit();
+            `, forms[0]);
+            await driver.sleep(600);
+            return true;
+        }
+
+        return false;
+    } catch (err) {
+        log('Error while trying to save attempt page.', { error: err.message }, driver);
+        return false;
+    }
+}
+
+/**
+ * Collect question text/options to pass into the solver.
+ */
 async function collectAttemptQuestions(driver) {
     const questions = [];
 
@@ -303,14 +423,17 @@ async function collectAttemptQuestions(driver) {
     return questions;
 }
 
+/**
+ * Click the "finish attempt" link and complete submission (modal).
+ * IMPORTANT: click instead of driver.get() to trigger Moodle's JS handlers.
+ */
 async function finalizeAttempt(driver) {
     try {
         const finishLinkElement = await driver.wait(until.elementLocated(By.css('.endtestlink')), 10000);
-        const finishUrl = await finishLinkElement.getAttribute('href');
-        log('Found completion link.', { finishUrl }, driver);
-
-        await driver.get(finishUrl);
-        log('Navigated to summary page to complete the quiz.', {}, driver);
+        // Click instead of navigate to ensure onClick handlers fire
+        await driver.executeScript('arguments[0].scrollIntoView({block:"center"});', finishLinkElement);
+        await finishLinkElement.click();
+        log('Navigated to summary page to complete the quiz (via click).', {}, driver);
 
         await submitQuiz(driver);
 
@@ -324,6 +447,9 @@ async function finalizeAttempt(driver) {
     }
 }
 
+/**
+ * Refresh the attempt summary and parse results.
+ */
 async function refreshAttemptSummary(driver, quizUrl, outputDir, quizSolverMode, options = {}) {
     const { skipReload = false } = options;
 
@@ -342,6 +468,7 @@ async function refreshAttemptSummary(driver, quizUrl, outputDir, quizSolverMode,
     await processAttempts(driver, attemptSummary, outputDir, quizSolverMode, quizUrl, { allowOpenAttempts: false });
 }
 
+/** Helpers to parse the summary table **/
 async function getReviewMessage(row, driver) {
     try {
         const reviewCell = await row.findElement(By.css('td:last-child'));
@@ -383,6 +510,9 @@ async function processAttemptLink(driver, row, quizData, outputDir) {
     }
 }
 
+/**
+ * Extract the graded results from a finished attempt review page.
+ */
 async function extractQuizResults(driver, quizData, outputDir) {
     try {
         const breadcrumbLink = await driver.findElement(By.css('.breadcrumb-item a[aria-current="page"]'));
@@ -418,10 +548,11 @@ async function extractQuizResults(driver, quizData, outputDir) {
             fs.mkdirSync(outputDir, { recursive: true });
         }
 
-        const outputPath = path.join(outputDir, `${sanitizedQuizTitle}.json`);
+        // Use a robust write path
+        const filePath = path.join(outputDir, `${sanitizedQuizTitle}.json`);
         try {
-            fs.writeFileSync(outputPath, JSON.stringify({ quizTitle, questions: quizData }, null, 2));
-            log('Quiz data saved successfully.', { path: outputPath });
+            fs.writeFileSync(filePath, JSON.stringify({ quizTitle, questions: quizData }, null, 2));
+            log('Quiz data saved successfully.', { path: filePath });
         } catch (err) {
             log('Failed to save quiz data.', { error: err.message });
         }
@@ -507,12 +638,18 @@ async function extractMultipleChoiceAnswers(question, driver) {
 
         for (const answerElement of answerElements) {
             const isSelected = (await answerElement.getAttribute('class')).includes('correct');
-            const isChecked = await answerElement.findElement(By.css('input')).isSelected();
-            const labelElement = await answerElement.findElement(By.css('div[data-region="answer-label"]'));
-            const answerText = await labelElement.getText();
+            const inputEl = await answerElement.findElement(By.css('input'));
+            const isChecked = await inputEl.isSelected();
+            let answerText = '';
+            try {
+                const labelElement = await answerElement.findElement(By.css('div[data-region="answer-label"]'));
+                answerText = await labelElement.getText();
+            } catch {
+                answerText = await answerElement.getText();
+            }
 
-            log('Parsed multiple-choice answer.', { text: answerText, isSelected, isChecked }, driver);
-            answers.push({ text: answerText, isSelected, isChecked });
+            log('Parsed multiple-choice answer.', { text: answerText.trim(), isSelected, isChecked }, driver);
+            answers.push({ text: answerText.trim(), isSelected, isChecked });
         }
     } catch (err) {
         log('Error extracting multiple-choice answers.', { error: err.message }, driver);
@@ -534,6 +671,9 @@ async function detectChoiceType(question, driver) {
     }
 }
 
+/**
+ * Submit the attempt on the summary page (handles confirmation modal).
+ */
 async function submitQuiz(driver) {
     try {
         const finishForm = await driver.wait(until.elementLocated(By.css('#frm-finishattempt')), 10000);

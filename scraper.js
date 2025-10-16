@@ -14,6 +14,9 @@ const { processDownloadQueue } = require('./utils/downloader');
 const { loadCourseState, saveCourseState } = require('./utils/stateManager');
 const inquirer = require('inquirer').default;
 
+// QUIZ WATCHER ⬇️
+const { withQuizWatcher } = require('./utils/quizWatcher');
+
 const {
     MOODLE_URL,
     MOODLE_LOGIN_URL,
@@ -139,20 +142,26 @@ options.setUserPreferences({
                 await log('Manueller Downloadmodus benötigt eine Kurs-URL.');
                 return;
             }
-            await downloadSingleCourse(driver, normalizedCourseUrl, argv.outputDir, argv.downloadMode);
+            await withQuizWatcher(driver, log, async () => {
+                await downloadSingleCourse(driver, normalizedCourseUrl, argv.outputDir, argv.downloadMode);
+            });
         } else if (argv.coursesFile) {
             const courses = JSON.parse(fs.readFileSync(argv.coursesFile, 'utf8'));
             const interval = argv.interval;
 
             while (true) {
                 for (const courseConfig of courses) {
-                    await syncCourse(driver, courseConfig);
+                    await withQuizWatcher(driver, log, async () => {
+                        await syncCourse(driver, courseConfig);
+                    });
                 }
                 log(`Synchronisation aller Kurse abgeschlossen. Warte ${interval / 1000} Sekunden vor dem nächsten Check.`);
                 await new Promise(resolve => setTimeout(resolve, interval));
             }
         } else if (normalizedCourseUrl) {
-            await downloadSingleCourse(driver, normalizedCourseUrl, argv.outputDir, argv.downloadMode);
+            await withQuizWatcher(driver, log, async () => {
+                await downloadSingleCourse(driver, normalizedCourseUrl, argv.outputDir, argv.downloadMode);
+            });
         } else {
             // 🧠 Neue automatische Kurswahl via CLI
             log('Kein Kurs angegeben. Starte interaktive Auswahl.');
@@ -188,7 +197,9 @@ options.setUserPreferences({
 
             const selectedCourse = courses[selectedCourseIndex];
             log(`Du hast gewählt: ${selectedCourse.title} (${selectedCourse.courseId})`);
-            await downloadSingleCourse(driver, selectedCourse.url, argv.outputDir, argv.downloadMode, true);
+            await withQuizWatcher(driver, log, async () => {
+                await downloadSingleCourse(driver, selectedCourse.url, argv.outputDir, argv.downloadMode, true);
+            });
         }
     } catch (err) {
         log(`Ein Fehler ist aufgetreten: ${err}`);
