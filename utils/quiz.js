@@ -7,6 +7,196 @@ const { log } = require('./logger');
 const { solveAndSubmitQuiz } = require('./solveQuiz');
 const { clickNextIfPossible } = require('./quizNav');
 
+const MARK_HEADING_COLOR = '#D32E0FA6';
+const CORRECT_ANSWER_COLOR = '#92d050';
+
+function normalizeMultiline(text = '') {
+    return text
+        .replace(/\r\n/g, '\n')
+        .replace(/\u00a0/g, ' ')
+        .replace(/\n{3,}/g, '\n\n')
+        .trim();
+}
+
+function normalizeInline(text = '') {
+    return text.replace(/\s+/g, ' ').replace(/\u00a0/g, ' ').trim();
+}
+
+function stripAnswerPrefix(text = '') {
+    return text.replace(/^\s*[a-z]\.?\s*/i, '').trim();
+}
+
+function cleanAnswerValue(value = '') {
+    let cleaned = value.replace(/\s+/g, ' ').trim();
+    cleaned = cleaned.replace(/^[„“"'`«]+/, '');
+    cleaned = cleaned.replace(/[”"'`»]+$/, '');
+    cleaned = cleaned.replace(/[\.。]+$/, '').trim();
+    return cleaned;
+}
+
+function normalizeForComparison(value = '') {
+    return stripAnswerPrefix(cleanAnswerValue(value)).toLowerCase();
+}
+
+function collectCorrectAnswerSet(question) {
+    const correctSet = new Set();
+
+    const add = (entry) => {
+        if (!entry) {
+            return;
+        }
+        const normalized = normalizeForComparison(entry);
+        if (normalized) {
+            correctSet.add(normalized);
+        }
+    };
+
+    if (Array.isArray(question?.correctAnswers) && question.correctAnswers.length) {
+        for (const answer of question.correctAnswers) {
+            add(answer);
+        }
+    } else if (typeof question?.correctAnswer === 'string' && question.correctAnswer.trim()) {
+        const parts = question.correctAnswer.split(/[,;]\s*/);
+        if (parts.length > 1) {
+            for (const part of parts) {
+                add(part);
+            }
+        } else {
+            add(question.correctAnswer);
+        }
+    }
+
+    return correctSet;
+}
+
+function formatExplanation(question) {
+    const pieces = [];
+
+    if (typeof question?.feedback === 'string' && question.feedback.trim()) {
+        pieces.push(question.feedback.trim());
+    }
+
+    if (typeof question?.generalFeedback === 'string' && question.generalFeedback.trim()) {
+        pieces.push(question.generalFeedback.trim());
+    }
+
+    if (!pieces.length) {
+        if (Array.isArray(question?.correctAnswers) && question.correctAnswers.length) {
+            pieces.push(`Die richtigen Antworten sind: ${question.correctAnswers.join(', ')}`);
+        } else if (typeof question?.correctAnswer === 'string' && question.correctAnswer.trim()) {
+            pieces.push(`Die richtige Antwort ist: ${question.correctAnswer.trim()}`);
+        }
+    }
+
+    if (!pieces.length) {
+        return '';
+    }
+
+    return pieces
+        .map((entry) => normalizeMultiline(entry))
+        .filter(Boolean)
+        .join('\n\n');
+}
+
+function formatAnswerList(question) {
+    const answers = Array.isArray(question?.answers) ? question.answers : [];
+
+    if (!answers.length) {
+        return [];
+    }
+
+    const correctSet = collectCorrectAnswerSet(question);
+
+    return answers
+        .map((answer) => {
+            const label = normalizeInline(answer?.label || '');
+            const text = normalizeMultiline(answer?.text || '');
+            const parts = [];
+            if (label) {
+                parts.push(label);
+            }
+            if (text) {
+                parts.push(text);
+            }
+            let display = parts.join(' ');
+            if (!display) {
+                display = normalizeMultiline(answer?.display || '');
+            }
+            if (!display) {
+                const field = normalizeMultiline(answer?.field || '');
+                const selectedOption = normalizeMultiline(answer?.selectedOption || answer?.selected || '');
+                if (field && selectedOption) {
+                    display = `${field} → ${selectedOption}`;
+                } else if (field) {
+                    display = field;
+                } else if (selectedOption) {
+                    display = selectedOption;
+                }
+            }
+            if (!display) {
+                return null;
+            }
+
+            const normalizedDisplay = normalizeForComparison(display);
+            const normalizedText = normalizeForComparison(text || display);
+            const isMarkedCorrect = Boolean(answer?.isMarkedCorrect);
+            const isCorrect =
+                isMarkedCorrect ||
+                correctSet.has(normalizedDisplay) ||
+                correctSet.has(normalizedText);
+
+            const formatted = isCorrect
+                ? `<font color="${CORRECT_ANSWER_COLOR}">**${display}**</font>`
+                : display;
+
+            return `- ${formatted}`;
+        })
+        .filter(Boolean);
+}
+
+function formatQuizMarkdown(quizTitle, questions) {
+    if (!Array.isArray(questions) || !questions.length) {
+        return '';
+    }
+
+    const lines = [];
+
+    if (quizTitle) {
+        lines.push(`# ${normalizeMultiline(quizTitle)}`);
+        lines.push('');
+    }
+
+    questions.forEach((question, index) => {
+        const number = question?.number || question?.qno || String(index + 1);
+        lines.push(`# <mark style="background: ${MARK_HEADING_COLOR};">Frage ${number}</mark>`);
+        lines.push('');
+
+        const questionText = normalizeMultiline(question?.text || '');
+        if (questionText) {
+            lines.push(questionText);
+            lines.push('');
+        }
+
+        const answers = formatAnswerList(question);
+        if (answers.length) {
+            lines.push(...answers);
+            lines.push('');
+        }
+
+        const explanation = formatExplanation(question);
+        if (explanation) {
+            lines.push('> **Begründung:**');
+            lines.push(...explanation.split('\n').map((line) => `> ${line}`));
+            lines.push('');
+        }
+
+        lines.push('<br>');
+        lines.push('<br>');
+    });
+
+    return lines.join('\n');
+}
+
 /**
  * Main entry for scraping/solving a Moodle quiz.
  */
@@ -20,7 +210,7 @@ async function scrapeQuiz(driver, quizUrl, outputDir, quizSolverMode = 'prompt')
         const pageSource = await driver.getPageSource();
         log('Page source fetched.', { currentUrl, pagePreview: pageSource.slice(0, 500) }, driver);
 
-        const attemptSummary = await driver.findElements(By.css('.generaltable.quizattemptsummary'));
+        const attemptSummary = await findAttemptSummaryTables(driver);
         log('Attempt summary status checked.', { attemptSummaryExists: attemptSummary.length > 0 }, driver);
 
         if (attemptSummary.length > 0) {
@@ -41,10 +231,13 @@ async function processAttempts(driver, attemptSummary, outputDir, quizSolverMode
     const { allowOpenAttempts = true } = options;
 
     try {
-        const rows = await driver.findElements(By.css('.generaltable.quizattemptsummary tbody tr'));
+        const rows = await driver.findElements(
+            By.css(
+                '.generaltable.quizattemptsummary tbody tr, table.quizattemptsummary tbody tr, table.quizsummaryofattempt tbody tr'
+            )
+        );
         log('Attempt summary rows fetched.', { rowsFound: rows.length }, driver);
 
-        const quizData = [];
         let attemptFound = false;
 
         for (const [rowIndex, row] of rows.entries()) {
@@ -80,7 +273,7 @@ async function processAttempts(driver, attemptSummary, outputDir, quizSolverMode
                 }
 
                 try {
-                    const linkProcessed = await processAttemptLink(driver, row, quizData, outputDir);
+                    const linkProcessed = await processAttemptLink(driver, row, outputDir);
                     log('Attempt link processed.', { rowIndex, linkProcessed }, driver);
 
                     if (linkProcessed) {
@@ -131,7 +324,7 @@ async function handleAttempt(driver, quizUrl, outputDir, quizSolverMode, options
     if (mode === 'manual') {
         await runManualSolve(driver);
     } else if (mode === 'openai') {
-        await runOpenAiSolve(driver);
+        await runOpenAiSolve(driver, outputDir);
     }
 
     await refreshAttemptSummary(driver, quizUrl, outputDir, quizSolverMode);
@@ -149,6 +342,23 @@ async function startAttempt(driver) {
         log('Failed to find or click start button.', { error: err.message }, driver);
         return false;
     }
+}
+
+async function findAttemptSummaryTables(driver) {
+    const selectors = [
+        '.generaltable.quizattemptsummary',
+        'table.quizattemptsummary',
+        'table.quizsummaryofattempt',
+    ];
+
+    for (const selector of selectors) {
+        const matches = await driver.findElements(By.css(selector));
+        if (matches.length) {
+            return matches;
+        }
+    }
+
+    return [];
 }
 
 async function ensureAttemptInterfaceReady(driver) {
@@ -230,7 +440,7 @@ async function getAttemptContext(driver) {
     return { url, attemptId, page };
 }
 
-async function runOpenAiSolve(driver) {
+async function runOpenAiSolve(driver, outputDir) {
     try {
         const seen = new Map(); // key=attemptId|page -> count
 
@@ -245,7 +455,7 @@ async function runOpenAiSolve(driver) {
             if (!/\/mod\/quiz\/attempt\.php/.test(url)) {
                 // Nicht auf einer Attempt-Seite → versuche Finish-Flow
                 await log('Not on attempt page, trying to finish attempt flow.', { url }, driver);
-                await finishAttemptFlow(driver);
+                await finishAttemptFlow(driver, outputDir);
                 break;
             }
 
@@ -255,7 +465,7 @@ async function runOpenAiSolve(driver) {
             if (seen.get(key) >= 3) {
                 await log('Same attempt page repeated 3x. Breaking to avoid submit loop.', { attemptId, page, url }, driver);
                 // versuche sauber zu beenden
-                await finishAttemptFlow(driver);
+                await finishAttemptFlow(driver, outputDir);
                 break;
             }
 
@@ -294,7 +504,7 @@ async function runOpenAiSolve(driver) {
 
             // 4) Kein "Weiter" verfügbar → Versuch beenden (Summary + Modal)
             await log('No next button present. Finishing attempt...', {}, driver);
-            await finishAttemptFlow(driver);
+            await finishAttemptFlow(driver, outputDir);
             break;
         }
     } catch (err) {
@@ -436,7 +646,7 @@ async function clickNextIfPresent(driver) {
     }
 }
 
-async function finishAttemptFlow(driver) {
+async function finishAttemptFlow(driver, outputDir) {
     try {
         const currentUrl = await driver.getCurrentUrl();
 
@@ -467,7 +677,7 @@ async function finishAttemptFlow(driver) {
             }
 
             await log('All questions are marked as answered. Submitting attempt.', {}, driver);
-            await submitQuiz(driver);
+            const extractedDuringSubmit = await submitQuiz(driver, outputDir);
 
             try {
                 await driver.wait(async () => {
@@ -476,6 +686,19 @@ async function finishAttemptFlow(driver) {
                 }, 10000);
             } catch (waitErr) {
                 await log('Timeout while waiting for post-submission page.', { error: waitErr.message }, driver);
+            }
+
+            if (outputDir && !extractedDuringSubmit) {
+                try {
+                    const postSubmitUrl = await driver.getCurrentUrl();
+                    if (/\/mod\/quiz\/review\.php/.test(postSubmitUrl)) {
+                        await log('On review page right after submit. Extracting results.', { postSubmitUrl }, driver);
+                        await extractQuizResults(driver, outputDir);
+                        return true;
+                    }
+                } catch (extractErr) {
+                    await log('Could not extract immediately after submit.', { error: extractErr.message }, driver);
+                }
             }
 
             return true;
@@ -641,7 +864,7 @@ async function returnToAttemptFromSummary(driver) {
  * Click the "finish attempt" link and complete submission (modal).
  * IMPORTANT: click instead of driver.get() to trigger Moodle's JS handlers.
  */
-async function finalizeAttempt(driver) {
+async function finalizeAttempt(driver, outputDir) {
     try {
         const finishLinkElement = await driver.wait(until.elementLocated(By.css('.endtestlink')), 10000);
         // Click instead of navigate to ensure onClick handlers fire
@@ -649,7 +872,7 @@ async function finalizeAttempt(driver) {
         await finishLinkElement.click();
         log('Navigated to summary page to complete the quiz (via click).', {}, driver);
 
-        await submitQuiz(driver);
+        await submitQuiz(driver, outputDir);
 
         try {
             await driver.wait(until.elementLocated(By.css('.generaltable.quizattemptsummary')), 10000);
@@ -667,14 +890,26 @@ async function finalizeAttempt(driver) {
 async function refreshAttemptSummary(driver, quizUrl, outputDir, quizSolverMode, options = {}) {
     const { skipReload = false } = options;
 
-    let attemptSummary = await driver.findElements(By.css('.generaltable.quizattemptsummary'));
+    let attemptSummary = await findAttemptSummaryTables(driver);
 
     if (!attemptSummary.length && !skipReload) {
         await driver.get(quizUrl);
-        attemptSummary = await driver.findElements(By.css('.generaltable.quizattemptsummary'));
+        attemptSummary = await findAttemptSummaryTables(driver);
     }
 
     if (!attemptSummary.length) {
+        const reviewLinks = await driver.findElements(By.css('a[href*="mod/quiz/review.php"]'));
+        if (reviewLinks.length && outputDir) {
+            try {
+                const href = await reviewLinks[0].getAttribute('href');
+                log('Summary table missing, but found direct review link. Following it.', { href }, driver);
+                await driver.get(href);
+                await extractQuizResults(driver, outputDir);
+            } catch (err) {
+                log('Failed to extract results via direct review link.', { error: err.message }, driver);
+            }
+            return;
+        }
         log('Attempt summary table not found after returning to quiz.', {}, driver);
         return;
     }
@@ -706,16 +941,17 @@ async function getStatus(row, driver) {
     }
 }
 
-async function processAttemptLink(driver, row, quizData, outputDir) {
+async function processAttemptLink(driver, row, outputDir) {
     try {
-        const attemptLink = await row.findElement(By.css('a[title*="Überprüfung"]')).getAttribute('href');
+        const reviewLinkElement = await row.findElement(By.css('a[href*="mod/quiz/review.php"]'));
+        const attemptLink = await reviewLinkElement.getAttribute('href');
         log('Attempt review link found.', { attemptLink }, driver);
 
         log('Navigating to attempt review page.', { attemptLink }, driver);
         await driver.get(attemptLink);
 
         log('Extracting results from the review page.', {}, driver);
-        await extractQuizResults(driver, quizData, outputDir);
+        await extractQuizResults(driver, outputDir);
 
         return true;
     } catch (err) {
@@ -727,7 +963,7 @@ async function processAttemptLink(driver, row, quizData, outputDir) {
 /**
  * Extract the graded results from a finished attempt review page.
  */
-async function extractQuizResults(driver, quizData, outputDir) {
+async function extractQuizResults(driver, outputDir) {
     try {
         const breadcrumbLink = await driver.findElement(By.css('.breadcrumb-item a[aria-current="page"]'));
         const quizTitle = await breadcrumbLink.getText();
@@ -737,6 +973,8 @@ async function extractQuizResults(driver, quizData, outputDir) {
 
         const questions = await driver.wait(until.elementsLocated(By.css('.que')), 10000);
         log('Found questions.', { count: questions.length });
+
+        const quizData = [];
 
         for (let i = 0; i < questions.length; i++) {
             try {
@@ -763,12 +1001,25 @@ async function extractQuizResults(driver, quizData, outputDir) {
         }
 
         // Use a robust write path
-        const filePath = path.join(outputDir, `${sanitizedQuizTitle}.json`);
+        const jsonPath = path.join(outputDir, `${sanitizedQuizTitle}.json`);
         try {
-            fs.writeFileSync(filePath, JSON.stringify({ quizTitle, questions: quizData }, null, 2));
-            log('Quiz data saved successfully.', { path: filePath });
+            fs.writeFileSync(jsonPath, JSON.stringify({ quizTitle, questions: quizData }, null, 2));
+            log('Quiz data saved successfully.', { path: jsonPath });
         } catch (err) {
             log('Failed to save quiz data.', { error: err.message });
+        }
+
+        try {
+            const markdown = formatQuizMarkdown(quizTitle, quizData);
+            if (markdown) {
+                const markdownPath = path.join(outputDir, `${sanitizedQuizTitle}.md`);
+                fs.writeFileSync(markdownPath, `${markdown}\n`, { encoding: 'utf8' });
+                log('Quiz markdown saved successfully.', { path: markdownPath });
+            } else {
+                log('Quiz markdown output was empty. Skipping file write.', { quizTitle });
+            }
+        } catch (err) {
+            log('Failed to generate quiz markdown output.', { error: err.message });
         }
     } catch (err) {
         log('Failed to extract quiz results.', { error: err.message });
@@ -785,6 +1036,16 @@ async function extractQuestionData(question, driver) {
         questionData.id = questionId;
         questionData.type = questionType;
 
+        try {
+            const qnoElement = await question.findElement(By.css('.info .qno'));
+            questionData.number = await qnoElement.getText();
+        } catch {}
+
+        try {
+            const stateElement = await question.findElement(By.css('.info .state'));
+            questionData.state = await stateElement.getText();
+        } catch {}
+
         const questionTextElement = await question.findElement(By.css('.qtext'));
         questionData.text = await questionTextElement.getText();
         log('Question text fetched.', { id: questionId, text: questionData.text }, driver);
@@ -799,15 +1060,63 @@ async function extractQuestionData(question, driver) {
         }
 
         try {
+            const feedbackElement = await question.findElement(By.css('.specificfeedback'));
+            const feedbackText = await feedbackElement.getText();
+            if (feedbackText && feedbackText.trim()) {
+                questionData.feedback = feedbackText.trim();
+            }
+        } catch {}
+
+        try {
+            const generalFeedbackElement = await question.findElement(By.css('.generalfeedback'));
+            const generalFeedbackText = await generalFeedbackElement.getText();
+            if (generalFeedbackText && generalFeedbackText.trim()) {
+                questionData.generalFeedback = generalFeedbackText.trim();
+            }
+        } catch {}
+
+        try {
             const feedbackElement = await question.findElement(By.css('.rightanswer'));
             const rightAnswerText = await feedbackElement.getText();
-            if (rightAnswerText.startsWith('Die richtige Antwort ist:')) {
-                questionData.correctAnswer = rightAnswerText.replace('Die richtige Antwort ist: ', '').trim();
-            } else if (rightAnswerText.startsWith('Die richtigen Antworten sind:')) {
-                questionData.correctAnswers = rightAnswerText
-                    .replace('Die richtigen Antworten sind: ', '')
-                    .split(',')
-                    .map(a => a.trim());
+            const normalizedRightAnswer = rightAnswerText.replace(/\s+/g, ' ').trim();
+
+            const multipleMatch = normalizedRightAnswer.match(/Die richtigen Antworten sind[:\s]*(.*)/i);
+            if (multipleMatch && multipleMatch[1]) {
+                const values = multipleMatch[1]
+                    .split(/[,;]\s*/)
+                    .map((entry) => cleanAnswerValue(entry))
+                    .filter(Boolean);
+                if (values.length) {
+                    questionData.correctAnswers = values;
+                }
+            }
+
+            if (!questionData.correctAnswers || !questionData.correctAnswers.length) {
+                const singleMatch = normalizedRightAnswer.match(/Die richtige Antwort ist[:\s]*(.*)/i);
+                if (singleMatch && singleMatch[1]) {
+                    const answerValue = cleanAnswerValue(singleMatch[1]);
+                    if (answerValue) {
+                        questionData.correctAnswer = answerValue;
+                    }
+                }
+            }
+
+            if (!questionData.correctAnswer && (!questionData.correctAnswers || !questionData.correctAnswers.length)) {
+                const strongElements = await feedbackElement.findElements(By.css('strong'));
+                const strongTexts = [];
+                for (const el of strongElements) {
+                    try {
+                        const value = await el.getText();
+                        if (value && value.trim()) {
+                            strongTexts.push(cleanAnswerValue(value));
+                        }
+                    } catch {}
+                }
+                if (strongTexts.length === 1) {
+                    questionData.correctAnswer = strongTexts[0];
+                } else if (strongTexts.length > 1) {
+                    questionData.correctAnswers = strongTexts.filter(Boolean);
+                }
             }
         } catch (err) {
             log('No feedback or right answer found for the question.', { id: questionId }, driver);
@@ -851,19 +1160,38 @@ async function extractMultipleChoiceAnswers(question, driver) {
         log('Extracting multiple-choice answers.', { questionId: await question.getAttribute('id'), answerCount: answerElements.length }, driver);
 
         for (const answerElement of answerElements) {
-            const isSelected = (await answerElement.getAttribute('class')).includes('correct');
+            const className = await answerElement.getAttribute('class');
+            const isMarkedCorrect = /(^|\s)correct(\s|$)/i.test(className);
             const inputEl = await answerElement.findElement(By.css('input'));
             const isChecked = await inputEl.isSelected();
-            let answerText = '';
+            let labelText = '';
+            let bodyText = '';
             try {
-                const labelElement = await answerElement.findElement(By.css('div[data-region="answer-label"]'));
-                answerText = await labelElement.getText();
+                const labelElement = await answerElement.findElement(By.css('.answernumber'));
+                labelText = await labelElement.getText();
+            } catch {}
+
+            try {
+                const bodyElement = await answerElement.findElement(By.css('[data-region="answer-label"] .flex-fill'));
+                bodyText = await bodyElement.getText();
             } catch {
-                answerText = await answerElement.getText();
+                try {
+                    const fallbackElement = await answerElement.findElement(By.css('div[data-region="answer-label"]'));
+                    bodyText = await fallbackElement.getText();
+                } catch {
+                    bodyText = await answerElement.getText();
+                }
             }
 
-            log('Parsed multiple-choice answer.', { text: answerText.trim(), isSelected, isChecked }, driver);
-            answers.push({ text: answerText.trim(), isSelected, isChecked });
+            const display = normalizeMultiline([labelText, bodyText].filter(Boolean).join(' '));
+            log('Parsed multiple-choice answer.', { text: display, isMarkedCorrect, isChecked }, driver);
+            answers.push({
+                label: labelText,
+                text: bodyText,
+                display,
+                isMarkedCorrect,
+                isChecked,
+            });
         }
     } catch (err) {
         log('Error extracting multiple-choice answers.', { error: err.message }, driver);
@@ -888,21 +1216,60 @@ async function detectChoiceType(question, driver) {
 /**
  * Submit the attempt on the summary page (handles confirmation modal).
  */
-async function submitQuiz(driver) {
+async function submitQuiz(driver, outputDir) {
     try {
         const finishForm = await driver.wait(until.elementLocated(By.css('#frm-finishattempt')), 10000);
         log('Finish attempt form found.', {}, driver);
 
-        const finishButton = await finishForm.findElement(By.css('button[type="submit"]'));
+        const finishButton = await finishForm.findElement(By.css('button[type="submit"], input[type="submit"]'));
+        await driver.executeScript('arguments[0].scrollIntoView({block:"center"});', finishButton);
         await finishButton.click();
         log('Clicked submit button in the form.', {}, driver);
 
-        const modal = await driver.wait(until.elementLocated(By.css('.modal-dialog')), 5000);
-        log('Submission modal detected.', {}, driver);
+        let modal = null;
+        try {
+            modal = await driver.wait(until.elementLocated(By.css('.modal-dialog')), 5000);
+            try {
+                await driver.wait(until.elementIsVisible(modal), 2000);
+            } catch (visibilityErr) {
+                log('Submission modal located but not reported visible within timeout.', { error: visibilityErr.message }, driver);
+            }
+            log('Submission modal detected.', {}, driver);
+        } catch (modalErr) {
+            log('Submission modal not detected within timeout. Continuing without modal confirmation.', { error: modalErr.message }, driver);
+        }
 
-        const modalSubmitButton = await modal.findElement(By.css('.modal-footer .btn-primary[data-action="save"]'));
-        await modalSubmitButton.click();
-        log('Clicked "Submit" button in modal.', {}, driver);
+        if (modal) {
+            const modalSubmitButton = await modal.findElement(By.css('.modal-footer .btn-primary[data-action="save"]'));
+            await modalSubmitButton.click();
+            log('Clicked "Submit" button in modal.', {}, driver);
+        }
+
+        try {
+            await driver.wait(async () => {
+                const url = await driver.getCurrentUrl();
+                return /\/mod\/quiz\/(review|summary)\.php/.test(url);
+            }, 10000);
+        } catch (waitErr) {
+            log('Post-submission navigation wait timed out.', { error: waitErr.message }, driver);
+        }
+
+        let extracted = false;
+
+        if (outputDir) {
+            try {
+                const afterUrl = await driver.getCurrentUrl();
+                if (/\/mod\/quiz\/review\.php/.test(afterUrl)) {
+                    log('Review page reached after submission. Extracting results now.', { afterUrl }, driver);
+                    await extractQuizResults(driver, outputDir);
+                    extracted = true;
+                }
+            } catch (extractErr) {
+                log('Failed to extract results immediately after submission.', { error: extractErr.message }, driver);
+            }
+        }
+
+        return extracted;
     } catch (err) {
         log('Failed to submit the quiz.', { error: err.message }, driver);
         throw err;
