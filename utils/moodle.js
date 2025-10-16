@@ -100,8 +100,36 @@ async function enumerateDownloads(driver, coursePath, downloadMode, quizSolverMo
                 log(`Verzeichnis für Sektion existiert bereits: ${sectionPath}`);
             }
 
-            const activities = await section.findElements(By.css(MOODLE_SELECTORS.activity));
-            log(`Anzahl gefundener Aktivitäten in Sektion "${sectionTitle}": ${activities.length}`);
+            const activitySelectors = [
+                MOODLE_SELECTORS.activity,
+                ...(Array.isArray(MOODLE_SELECTORS.activitySelectors) ? MOODLE_SELECTORS.activitySelectors : []),
+            ].filter(Boolean);
+
+            let activities = [];
+            let usedActivitySelector = null;
+
+            for (const selector of activitySelectors) {
+                try {
+                    const found = await section.findElements(By.css(selector));
+                    if (found.length > 0) {
+                        activities = found;
+                        usedActivitySelector = selector;
+                        if (selector !== MOODLE_SELECTORS.activity) {
+                            log(`Sektion ${sectionIndex + 1}: Fallback-Selektor für Aktivitäten verwendet: "${selector}"`);
+                        }
+                        break;
+                    }
+                } catch (err) {
+                    log(`Sektion ${sectionIndex + 1}: Fehler beim Suchen nach Aktivitäten mit Selektor "${selector}": ${err.message}`);
+                }
+            }
+
+            if (!activities.length) {
+                log(`Anzahl gefundener Aktivitäten in Sektion "${sectionTitle}": 0 (verwendete Selektoren: ${activitySelectors.join(', ')})`);
+                continue;
+            }
+
+            log(`Anzahl gefundener Aktivitäten in Sektion "${sectionTitle}": ${activities.length}` + (usedActivitySelector ? ` (Selektor: ${usedActivitySelector})` : ''));
 
             for (const [activityIndex, activity] of activities.entries()) {
                 const activityType = await activity.getAttribute('class');
