@@ -5,6 +5,7 @@ const path = require('path');
 const inquirer = require('inquirer').default;
 const { log } = require('./logger');
 const { solveAndSubmitQuiz } = require('./solveQuiz');
+const { clickNextIfPossible } = require('./quizNav');
 
 /**
  * Main entry for scraping/solving a Moodle quiz.
@@ -424,6 +425,216 @@ async function collectAttemptQuestions(driver) {
     }
 
     return questions;
+}
+
+async function clickNextIfPresent(driver) {
+    try {
+        return await clickNextIfPossible(driver);
+    } catch (err) {
+        await log('Error while trying to click next button.', { error: err.message }, driver);
+        return false;
+    }
+}
+
+async function finishAttemptFlow(driver) {
+    try {
+        const currentUrl = await driver.getCurrentUrl();
+
+        if (/\/mod\/quiz\/review\.php/.test(currentUrl)) {
+            await log('Review page already reached. No additional actions required.', { currentUrl }, driver);
+            return true;
+        }
+
+        if (/\/mod\/quiz\/attempt\.php/.test(currentUrl)) {
+            await log('Attempt page detected. Preparing to navigate to summary.', { currentUrl }, driver);
+            await reportNavigationStatus(driver);
+
+            const navigated = await navigateToSummary(driver);
+            if (!navigated) {
+                await log('Unable to reach summary page from attempt.', { currentUrl }, driver);
+                return false;
+            }
+        }
+
+        const summaryReached = await driver.getCurrentUrl();
+        if (/\/mod\/quiz\/summary\.php/.test(summaryReached)) {
+            await log('Summary page reached. Validating question statuses before submission.', { summaryReached }, driver);
+            const allSaved = await verifySummaryStatuses(driver);
+            if (!allSaved) {
+                await log('Summary indicates unanswered questions. Returning to attempt page.', { summaryReached }, driver);
+                await returnToAttemptFromSummary(driver);
+                return false;
+            }
+
+            await log('All questions are marked as answered. Submitting attempt.', {}, driver);
+            await submitQuiz(driver);
+
+            try {
+                await driver.wait(async () => {
+                    const url = await driver.getCurrentUrl();
+                    return /\/mod\/quiz\/(review|summary)\.php/.test(url);
+                }, 10000);
+            } catch (waitErr) {
+                await log('Timeout while waiting for post-submission page.', { error: waitErr.message }, driver);
+            }
+
+            return true;
+        }
+
+        await log('finishAttemptFlow invoked on an unexpected page.', { currentUrl: summaryReached }, driver);
+        return false;
+    } catch (err) {
+        await log('Error in finishAttemptFlow.', { error: err.message }, driver);
+        return false;
+    }
+}
+
+async function reportNavigationStatus(driver) {
+    try {
+        const status = await driver.executeScript(() => {
+            const buttons = Array.from(document.querySelectorAll('#mod_quiz_navblock .qnbutton'));
+            return buttons.map((button) => {
+                const title = button.getAttribute('title') || '';
+                const label = button.textContent?.replace(/\s+/g, ' ').trim() || '';
+                return {
+                    id: button.id || null,
+                    label,
+                    title,
+                    className: button.className || '',
+                };
+            });
+        });
+
+        const unanswered = status
+            .filter((entry) => isMarkedUnanswered(entry.className, entry.title))
+            .map((entry) => entry.label);
+
+        await log('Collected quiz navigation status.', { unanswered }, driver);
+    } catch (err) {
+        await log('Failed to collect navigation status.', { error: err.message }, driver);
+    }
+}
+
+function isMarkedUnanswered(className = '', title = '') {
+    const combined = `${className} ${title}`.toLowerCase();
+    return (
+        combined.includes('notyetanswered') ||
+        combined.includes('nicht beantwortet') ||
+        combined.includes('not answered') ||
+        combined.includes('bisher nicht beantwortet')
+    );
+}
+
+async function navigateToSummary(driver) {
+    const attemptSelectors = [
+        'form#responseform input[name="next"]',
+        'form#responseform button[name="next"]',
+        'input.mod_quiz-next-nav',
+        'button.mod_quiz-next-nav',
+        'a.endtestlink',
+    ];
+
+    for (const selector of attemptSelectors) {
+        const elements = await driver.findElements(By.css(selector));
+        for (const element of elements) {
+            try {
+                const candidate = (await element.getAttribute('value')) || (await element.getText()) || '';
+                const normalized = candidate.toLowerCase();
+                if (
+                    normalized.includes('abschließ') ||
+                    normalized.includes('finish') ||
+                    normalized.includes('versuch abschließen') ||
+                    normalized.includes('versuch beenden')
+                ) {
+                    await driver.executeScript('arguments[0].scrollIntoView({block:"center"});', element);
+                    await driver.sleep(100);
+                    await element.click();
+                    try {
+                        await driver.wait(until.urlContains('/mod/quiz/summary.php'), 10000);
+                    } catch (err) {
+                        await log('Navigation to summary timed out after clicking finish control.', { error: err.message }, driver);
+                    }
+                    return /\/mod\/quiz\/summary\.php/.test(await driver.getCurrentUrl());
+                }
+            } catch (err) {
+                await log('Failed to evaluate finish control candidate.', { selector, error: err.message }, driver);
+            }
+        }
+    }
+
+    return false;
+}
+
+async function verifySummaryStatuses(driver) {
+    try {
+        const summary = await driver.executeScript(() => {
+            const rows = Array.from(document.querySelectorAll('table.quizsummaryofattempt tbody tr'));
+            return rows
+                .map((row) => {
+                    const classes = row.className || '';
+                    if (/quizsummaryheading/.test(classes)) {
+                        return null;
+                    }
+                    const question = row.querySelector('td.c0')?.textContent?.replace(/\s+/g, ' ').trim() || '';
+                    const status = row.querySelector('td.c1')?.textContent?.replace(/\s+/g, ' ').trim() || '';
+                    return question ? { question, status, classes } : null;
+                })
+                .filter(Boolean);
+        });
+
+        if (!summary.length) {
+            await log('No summary rows detected; assuming nothing to validate.', {}, driver);
+            return true;
+        }
+
+        const pending = summary.filter((entry) => !isStatusSaved(entry.status, entry.classes));
+        if (pending.length) {
+            await log('Summary rows without saved answers detected.', { pending }, driver);
+            return false;
+        }
+
+        return true;
+    } catch (err) {
+        await log('Failed to evaluate summary table.', { error: err.message }, driver);
+        return false;
+    }
+}
+
+function isStatusSaved(status = '', className = '') {
+    const normalized = `${status} ${className}`.toLowerCase();
+    if (!normalized.trim()) {
+        return false;
+    }
+    return (
+        normalized.includes('antwort gespeichert') ||
+        normalized.includes('complete') ||
+        normalized.includes('beantwortet') ||
+        normalized.includes('answered')
+    );
+}
+
+async function returnToAttemptFromSummary(driver) {
+    const selectors = [
+        'form[action*="mod/quiz/attempt.php"] button[type="submit"]',
+        'form[action*="mod/quiz/attempt.php"] input[type="submit"]',
+        'a.endtestlink',
+    ];
+
+    for (const selector of selectors) {
+        const elements = await driver.findElements(By.css(selector));
+        if (!elements.length) {
+            continue;
+        }
+        try {
+            await elements[0].click();
+            await driver.wait(until.urlContains('/mod/quiz/attempt.php'), 10000);
+            return true;
+        } catch (err) {
+            await log('Failed to navigate back to attempt page from summary.', { selector, error: err.message }, driver);
+        }
+    }
+
+    return false;
 }
 
 /**
