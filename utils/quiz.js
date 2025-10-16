@@ -855,20 +855,83 @@ async function finalizeAttempt(driver) {
  */
 async function refreshAttemptSummary(driver, quizUrl, outputDir, quizSolverMode, options = {}) {
     const { skipReload = false } = options;
+    let extractedDuringRefresh = false;
 
-    let attemptSummary = await driver.findElements(By.css('.generaltable.quizattemptsummary'));
+    try {
+        const currentUrl = await driver.getCurrentUrl();
+        if (/\/mod\/quiz\/review\.php/.test(currentUrl)) {
+            await log('Review page detected while refreshing attempt summary. Extracting results directly.', { currentUrl }, driver);
+            await extractQuizResults(driver, outputDir);
+            extractedDuringRefresh = true;
+
+            if (!skipReload) {
+                await driver.get(quizUrl);
+            }
+        } else if (!/\/mod\/quiz\/view\.php/.test(currentUrl) && !skipReload) {
+            await driver.get(quizUrl);
+        }
+    } catch (navigationErr) {
+        await log('Error while preparing to refresh attempt summary.', { error: navigationErr.message }, driver);
+    }
+
+    let attemptSummary = [];
+    try {
+        attemptSummary = await driver.findElements(By.css('.generaltable.quizattemptsummary'));
+    } catch (summaryErr) {
+        await log('Failed to locate attempt summary table.', { error: summaryErr.message }, driver);
+    }
 
     if (!attemptSummary.length && !skipReload) {
-        await driver.get(quizUrl);
-        attemptSummary = await driver.findElements(By.css('.generaltable.quizattemptsummary'));
+        try {
+            await driver.get(quizUrl);
+            attemptSummary = await driver.findElements(By.css('.generaltable.quizattemptsummary'));
+        } catch (retryErr) {
+            await log('Retry to locate attempt summary table failed.', { error: retryErr.message }, driver);
+        }
     }
 
     if (!attemptSummary.length) {
+        if (extractedDuringRefresh) {
+            await log('Attempt summary table not found after review extraction. Skipping additional processing.', {}, driver);
+            return;
+        }
+
+        const fallbackUsed = await followDirectReviewLink(driver, outputDir);
+        if (fallbackUsed) {
+            return;
+        }
+
         log('Attempt summary table not found after returning to quiz.', {}, driver);
         return;
     }
 
     await processAttempts(driver, attemptSummary, outputDir, quizSolverMode, quizUrl, { allowOpenAttempts: false });
+}
+
+async function followDirectReviewLink(driver, outputDir) {
+    try {
+        const reviewLinks = await driver.findElements(By.css('a[href*="/mod/quiz/review.php"]'));
+        if (!reviewLinks.length) {
+            await log('Direct review link fallback not available on current page.', {}, driver);
+            return false;
+        }
+
+        const primaryLink = reviewLinks[0];
+        const reviewUrl = await primaryLink.getAttribute('href');
+        if (!reviewUrl) {
+            await log('Direct review link fallback located without usable href.', {}, driver);
+            return false;
+        }
+
+        await log('Attempt summary missing. Following direct review link fallback.', { reviewUrl }, driver);
+        await driver.get(reviewUrl);
+        await extractQuizResults(driver, outputDir);
+
+        return true;
+    } catch (err) {
+        await log('Failed to follow direct review link fallback.', { error: err.message }, driver);
+        return false;
+    }
 }
 
 /** Helpers to parse the summary table **/
