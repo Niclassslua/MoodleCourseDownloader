@@ -219,9 +219,54 @@ function generateBatchPrompt(questions) {
         .join('\n\n');
 }
 
+function normalizeJsonContent(content) {
+    if (!content || typeof content !== 'string') {
+        return null;
+    }
+
+    const trimmed = content.trim();
+
+    // Handle responses wrapped in Markdown code fences (```json ... ```)
+    const fenceMatch = trimmed.match(/^```(?:json)?\s*([\s\S]*?)```$/i);
+    if (fenceMatch) {
+        return fenceMatch[1].trim();
+    }
+
+    const firstBrace = trimmed.indexOf('{');
+    const lastBrace = trimmed.lastIndexOf('}');
+    if (firstBrace !== -1 && lastBrace !== -1 && lastBrace >= firstBrace) {
+        return trimmed.slice(firstBrace, lastBrace + 1);
+    }
+
+    return trimmed;
+}
+
+function coerceResponseArray(rawResponse) {
+    if (Array.isArray(rawResponse)) {
+        return rawResponse;
+    }
+
+    if (rawResponse == null) {
+        return [];
+    }
+
+    // Allow single values (string/number/boolean) to be coerced into a one-element array
+    if (['string', 'number', 'boolean'].includes(typeof rawResponse)) {
+        return [rawResponse];
+    }
+
+    return [];
+}
+
 function parseBatchResponse(responseContent, questions) {
     try {
-        const parsed = JSON.parse(responseContent.trim());
+        const normalizedContent = normalizeJsonContent(responseContent);
+        if (!normalizedContent) {
+            console.error(`${fg.red}Empty response content received from OpenAI.${reset}`);
+            return questions.map(() => null);
+        }
+
+        const parsed = JSON.parse(normalizedContent);
         if (!parsed.answers || !Array.isArray(parsed.answers)) {
             console.error(`${fg.red}Invalid response structure:${reset}`, parsed);
             return questions.map(() => null);
@@ -231,8 +276,9 @@ function parseBatchResponse(responseContent, questions) {
             const answer = parsed.answers.find((a) => a.id === q.id);
             if (!answer) return null;
 
-            if (q.type === 'match' && Array.isArray(answer.response)) {
-                return answer.response
+            if (q.type === 'match') {
+                const responseArray = coerceResponseArray(answer.response);
+                return responseArray
                     .filter((pair) => pair && typeof pair.field === 'string' && typeof pair.selectedOption === 'string')
                     .map((pair) => ({
                         field: pair.field.trim(),
@@ -240,8 +286,9 @@ function parseBatchResponse(responseContent, questions) {
                     }));
             }
 
-            if ((q.type === 'multichoice' || q.type === 'single' || q.type === 'truefalse') && Array.isArray(answer.response)) {
-                return answer.response
+            if (q.type === 'multichoice' || q.type === 'single' || q.type === 'truefalse') {
+                const responseArray = coerceResponseArray(answer.response);
+                return responseArray
                     .filter((entry) => typeof entry === 'string' && entry.trim().length)
                     .map((entry) => entry.trim().toUpperCase());
             }
