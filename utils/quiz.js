@@ -234,7 +234,6 @@ async function processAttempts(driver, attemptSummary, outputDir, quizSolverMode
         const rows = await driver.findElements(By.css('.generaltable.quizattemptsummary tbody tr'));
         log('Attempt summary rows fetched.', { rowsFound: rows.length }, driver);
 
-        const quizData = [];
         let attemptFound = false;
 
         for (const [rowIndex, row] of rows.entries()) {
@@ -270,7 +269,7 @@ async function processAttempts(driver, attemptSummary, outputDir, quizSolverMode
                 }
 
                 try {
-                    const linkProcessed = await processAttemptLink(driver, row, quizData, outputDir);
+                    const linkProcessed = await processAttemptLink(driver, row, outputDir);
                     log('Attempt link processed.', { rowIndex, linkProcessed }, driver);
 
                     if (linkProcessed) {
@@ -896,7 +895,7 @@ async function getStatus(row, driver) {
     }
 }
 
-async function processAttemptLink(driver, row, quizData, outputDir) {
+async function processAttemptLink(driver, row, outputDir) {
     try {
         const attemptLink = await row.findElement(By.css('a[title*="Überprüfung"]')).getAttribute('href');
         log('Attempt review link found.', { attemptLink }, driver);
@@ -905,7 +904,7 @@ async function processAttemptLink(driver, row, quizData, outputDir) {
         await driver.get(attemptLink);
 
         log('Extracting results from the review page.', {}, driver);
-        await extractQuizResults(driver, quizData, outputDir);
+        await extractQuizResults(driver, outputDir);
 
         return true;
     } catch (err) {
@@ -917,7 +916,7 @@ async function processAttemptLink(driver, row, quizData, outputDir) {
 /**
  * Extract the graded results from a finished attempt review page.
  */
-async function extractQuizResults(driver, quizData, outputDir) {
+async function extractQuizResults(driver, outputDir) {
     try {
         const breadcrumbLink = await driver.findElement(By.css('.breadcrumb-item a[aria-current="page"]'));
         const quizTitle = await breadcrumbLink.getText();
@@ -927,6 +926,8 @@ async function extractQuizResults(driver, quizData, outputDir) {
 
         const questions = await driver.wait(until.elementsLocated(By.css('.que')), 10000);
         log('Found questions.', { count: questions.length });
+
+        const quizData = [];
 
         for (let i = 0; i < questions.length; i++) {
             try {
@@ -1173,16 +1174,38 @@ async function submitQuiz(driver) {
         const finishForm = await driver.wait(until.elementLocated(By.css('#frm-finishattempt')), 10000);
         log('Finish attempt form found.', {}, driver);
 
-        const finishButton = await finishForm.findElement(By.css('button[type="submit"]'));
+        const finishButton = await finishForm.findElement(By.css('button[type="submit"], input[type="submit"]'));
+        await driver.executeScript('arguments[0].scrollIntoView({block:"center"});', finishButton);
         await finishButton.click();
         log('Clicked submit button in the form.', {}, driver);
 
-        const modal = await driver.wait(until.elementLocated(By.css('.modal-dialog')), 5000);
-        log('Submission modal detected.', {}, driver);
+        let modal = null;
+        try {
+            modal = await driver.wait(until.elementLocated(By.css('.modal-dialog')), 5000);
+            try {
+                await driver.wait(until.elementIsVisible(modal), 2000);
+            } catch (visibilityErr) {
+                log('Submission modal located but not reported visible within timeout.', { error: visibilityErr.message }, driver);
+            }
+            log('Submission modal detected.', {}, driver);
+        } catch (modalErr) {
+            log('Submission modal not detected within timeout. Continuing without modal confirmation.', { error: modalErr.message }, driver);
+        }
 
-        const modalSubmitButton = await modal.findElement(By.css('.modal-footer .btn-primary[data-action="save"]'));
-        await modalSubmitButton.click();
-        log('Clicked "Submit" button in modal.', {}, driver);
+        if (modal) {
+            const modalSubmitButton = await modal.findElement(By.css('.modal-footer .btn-primary[data-action="save"]'));
+            await modalSubmitButton.click();
+            log('Clicked "Submit" button in modal.', {}, driver);
+        }
+
+        try {
+            await driver.wait(async () => {
+                const url = await driver.getCurrentUrl();
+                return /\/mod\/quiz\/(review|summary)\.php/.test(url);
+            }, 10000);
+        } catch (waitErr) {
+            log('Post-submission navigation wait timed out.', { error: waitErr.message }, driver);
+        }
     } catch (err) {
         log('Failed to submit the quiz.', { error: err.message }, driver);
         throw err;
