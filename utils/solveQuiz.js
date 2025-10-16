@@ -38,6 +38,11 @@ const openai = new OpenAI({
     apiKey: process.env.OPENAI_API_KEY,
 });
 
+/**
+ * Applies answers provided by OpenAI to the current quiz page.
+ *
+ * @returns {Promise<boolean>} true when at least one answer was applied, otherwise false.
+ */
 async function solveAndSubmitQuiz(driver, questions) {
     try {
         const userPrompt = generateBatchPrompt(questions);
@@ -137,20 +142,14 @@ async function solveAndSubmitQuiz(driver, questions) {
         }
 
         if (appliedAnswerCount === 0) {
-            console.warn(`${fg.yellow}No actionable answers were applied; skipping submit button click.${reset}`);
-            return;
+            console.warn(`${fg.yellow}No actionable answers were applied on this page.${reset}`);
+            return false;
         }
 
-        try {
-            console.log(`${fg.yellow}Finding submit button${reset}`);
-            const submitButton = await driver.findElement(By.css('button[type="submit"]'));
-            console.log(`${fg.yellow}Clicking submit button${reset}`);
-            await submitButton.click();
-        } catch (submitErr) {
-            console.warn(`${fg.yellow}No immediate submit button found; continuing without clicking.${reset}`);
-        }
+        return true;
     } catch (err) {
         console.error(`${fg.red}Error in solveAndSubmitQuiz: ${err.message}${reset}`);
+        return false;
     }
 }
 

@@ -64,9 +64,9 @@ describe('solveAndSubmitQuiz (Real OpenAI)', () => {
         const parsedAnswers = parseBatchResponse(responseContent, mockQuizData.questions);
         console.log('Parsed answers:', parsedAnswers);
 
-        await solveAndSubmitQuiz(mockDriver, mockQuizData.questions);
+        const result = await solveAndSubmitQuiz(mockDriver, mockQuizData.questions);
 
-        expect(mockDriver.findElement).toHaveBeenCalled();
+        expect(typeof result).toBe('boolean');
         expect(mockDriver.findElements).toHaveBeenCalled();
     });
 });
