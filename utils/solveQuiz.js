@@ -38,6 +38,11 @@ const openai = new OpenAI({
     apiKey: process.env.OPENAI_API_KEY,
 });
 
+/**
+ * Applies answers provided by OpenAI to the current quiz page.
+ *
+ * @returns {Promise<boolean>} true when at least one answer was applied, otherwise false.
+ */
 async function solveAndSubmitQuiz(driver, questions) {
     try {
         const userPrompt = generateBatchPrompt(questions);
@@ -100,6 +105,8 @@ async function solveAndSubmitQuiz(driver, questions) {
         const parsedAnswers = parseBatchResponse(responseContent, questions);
         console.log(`${fg.green}Parsed answers:${reset}\n`, parsedAnswers);
 
+        let appliedAnswerCount = 0;
+
         // Handle parsed answers
         for (let i = 0; i < questions.length; i++) {
             const question = questions[i];
@@ -122,22 +129,27 @@ async function solveAndSubmitQuiz(driver, questions) {
                     continue;
                 }
 
-                await handleMatchQuestion(driver, question, answer);
+                const handled = await handleMatchQuestion(driver, question, answer);
+                if (handled) {
+                    appliedAnswerCount += 1;
+                }
             } else {
-                await handleChoiceQuestion(driver, question, answer);
+                const handled = await handleChoiceQuestion(driver, question, answer);
+                if (handled) {
+                    appliedAnswerCount += 1;
+                }
             }
         }
 
-        try {
-            console.log(`${fg.yellow}Finding submit button${reset}`);
-            const submitButton = await driver.findElement(By.css('button[type="submit"]'));
-            console.log(`${fg.yellow}Clicking submit button${reset}`);
-            await submitButton.click();
-        } catch (submitErr) {
-            console.warn(`${fg.yellow}No immediate submit button found; continuing without clicking.${reset}`);
+        if (appliedAnswerCount === 0) {
+            console.warn(`${fg.yellow}No actionable answers were applied on this page.${reset}`);
+            return false;
         }
+
+        return true;
     } catch (err) {
         console.error(`${fg.red}Error in solveAndSubmitQuiz: ${err.message}${reset}`);
+        return false;
     }
 }
 
@@ -247,6 +259,7 @@ async function handleMatchQuestion(driver, question, answer) {
     try {
         const rows = await driver.findElements(By.css(`#${question.id} .answer tbody tr`));
         const rowMap = new Map();
+        let applied = false;
 
         for (const row of rows) {
             try {
@@ -273,9 +286,12 @@ async function handleMatchQuestion(driver, question, answer) {
             const select = await row.findElement(By.css('select'));
             await select.sendKeys(pair.selectedOption);
             log('Match answer selected.', { questionId: question.id, field: pair.field, selectedOption: pair.selectedOption });
+            applied = true;
         }
+        return applied;
     } catch (err) {
         log('Error handling match question.', { error: err.message, questionId: question.id });
+        return false;
     }
 }
 
@@ -285,7 +301,7 @@ async function handleChoiceQuestion(driver, question, answer) {
 
         if (!answers.length) {
             log('No choice options located for question.', { questionId: question.id });
-            return;
+            return false;
         }
 
         const normalized = Array.isArray(answer)
@@ -293,9 +309,14 @@ async function handleChoiceQuestion(driver, question, answer) {
             : [];
 
         const isMultiple = question.choiceType === 'multiple';
+        if (!normalized.length) {
+            log('No answer content provided for choice question.', { questionId: question.id });
+            return false;
+        }
 
         if (isMultiple) {
             const desired = new Set(normalized);
+            let changed = false;
 
             for (let index = 0; index < answers.length; index += 1) {
                 const letter = String.fromCharCode(65 + index);
@@ -306,22 +327,23 @@ async function handleChoiceQuestion(driver, question, answer) {
                 if (shouldSelect !== currentlySelected) {
                     await input.click();
                     log(shouldSelect ? 'Answer selected.' : 'Answer deselected.', { questionId: question.id, letter });
+                    changed = true;
                 }
             }
 
-            return;
+            return changed || normalized.length > 0;
         }
 
         const letter = normalized[0];
         if (!letter) {
             log('No answer provided for single-choice question.', { questionId: question.id });
-            return;
+            return false;
         }
 
         const index = letter.charCodeAt(0) - 65;
         if (index < 0 || index >= answers.length) {
             log('Answer index out of bounds for single-choice question.', { questionId: question.id, letter });
-            return;
+            return false;
         }
 
         const input = await answers[index].findElement(By.css('input'));
@@ -329,13 +351,16 @@ async function handleChoiceQuestion(driver, question, answer) {
         if (!alreadySelected) {
             await input.click();
             log('Answer selected.', { questionId: question.id, letter });
+            return true;
         }
 
         if (normalized.length > 1) {
             log('Multiple answers provided for single-choice question; extra entries ignored.', { questionId: question.id, letters: normalized });
         }
+        return true;
     } catch (err) {
         log('Error handling choice question.', { error: err.message, questionId: question.id });
+        return false;
     }
 }
 

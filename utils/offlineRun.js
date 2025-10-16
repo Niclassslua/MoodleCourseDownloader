@@ -20,5 +20,6 @@ const { mockQuizData } = require('./mockData');
         ],
     };
 
-    await solveAndSubmitQuiz(mockDriver, mockQuizData.questions);
+    const applied = await solveAndSubmitQuiz(mockDriver, mockQuizData.questions);
+    console.log(`Solver applied answers: ${applied}`);
 })();

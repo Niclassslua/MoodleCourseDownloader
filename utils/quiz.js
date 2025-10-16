@@ -270,7 +270,10 @@ async function runOpenAiSolve(driver) {
             if (questions.length) {
                 await log('Solving current page with OpenAI...', { count: questions.length }, driver);
                 // WICHTIG: solveAndSubmitQuiz soll NUR Antworten setzen, NICHT submitten!
-                await solveAndSubmitQuiz(driver, questions);
+                const applied = await solveAndSubmitQuiz(driver, questions);
+                if (!applied) {
+                    await log('Solver did not apply any answers on this page.', { url }, driver);
+                }
             } else {
                 await log('No questions detected (or unsupported) on this page.', { url }, driver);
             }
