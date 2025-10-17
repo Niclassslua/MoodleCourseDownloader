@@ -61,7 +61,7 @@ describe('solveAndSubmitQuiz (Real OpenAI)', () => {
         const responseContent = response.choices[0]?.message?.content;
         console.log('OpenAI Response:', responseContent);
 
-        const parsedAnswers = parseBatchResponse(responseContent, mockQuizData.questions);
+        const { answers: parsedAnswers } = parseBatchResponse(responseContent, mockQuizData.questions);
         console.log('Parsed answers:', parsedAnswers);
 
         const result = await solveAndSubmitQuiz(mockDriver, mockQuizData.questions);
@@ -97,7 +97,8 @@ describe('parseBatchResponse', () => {
 
         const parsed = parseBatchResponse(responseContent, questions);
 
-        expect(parsed).toEqual([['B']]);
+        expect(parsed.answers).toEqual([['B']]);
+        expect(parsed.estimatedSolveSeconds).toBeNull();
     });
 
     it('extracts answers from fenced JSON and coerces single values', () => {
@@ -134,9 +135,41 @@ describe('parseBatchResponse', () => {
 
         const parsed = parseBatchResponse(responseContent, questions);
 
-        expect(parsed).toEqual([
+        expect(parsed.answers).toEqual([
             ['B'],
             [{ field: 'Term 1', selectedOption: 'Definition 2' }],
         ]);
+        expect(parsed.estimatedSolveSeconds).toBeNull();
+
+    });
+
+    it('returns estimated solve seconds when provided', () => {
+        const questions = [
+            {
+                id: 'question-single-1',
+                type: 'single',
+                text: 'Welche Option ist korrekt?',
+                answers: [
+                    { text: 'Option A', value: 'A' },
+                    { text: 'Option B', value: 'B' },
+                ],
+                choiceType: 'single',
+            },
+        ];
+
+        const responseContent = JSON.stringify({
+            estimatedSolveSeconds: '12.5',
+            answers: [
+                {
+                    id: 'question-single-1',
+                    response: ['a'],
+                },
+            ],
+        });
+
+        const parsed = parseBatchResponse(responseContent, questions, { includeSolveEstimate: true });
+
+        expect(parsed.answers).toEqual([['A']]);
+        expect(parsed.estimatedSolveSeconds).toBeCloseTo(12.5);
     });
 });

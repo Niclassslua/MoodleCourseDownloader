@@ -39,16 +39,18 @@ const openai = new OpenAI({
 });
 
 /**
- * Applies answers provided by OpenAI to the current quiz page.
- *
- * @returns {Promise<boolean>} true when at least one answer was applied, otherwise false.
+ * Builds the system prompt sent to OpenAI, optionally requesting solve time estimates.
  */
-async function solveAndSubmitQuiz(driver, questions) {
-    try {
-        const userPrompt = generateBatchPrompt(questions);
-        console.log(`${fg.cyan}Generated batch prompt:${reset}\n${userPrompt}\n`);
+function buildSystemPrompt({ includeSolveEstimate = false } = {}) {
+    const estimateBlock = includeSolveEstimate
+        ? `
+            Additionally, include a top-level property "estimatedSolveSeconds" with a realistic estimate for how many seconds a focused human would need to solve the entire quiz page. The value must be a positive number (decimals allowed) representing seconds. Always include this property in your response.
+        `
+        : '';
 
-        const systemPrompt = `
+    const exampleEstimateLine = includeSolveEstimate ? '              "estimatedSolveSeconds": 42,\n' : '';
+
+    return `
             You are a strict JSON generator for quiz questions. Always output a single valid JSON object and nothing else.
 
             For match questions:
@@ -62,10 +64,10 @@ async function solveAndSubmitQuiz(driver, questions) {
 
             For single-choice questions:
             - Return exactly one letter wrapped in an array, e.g. ["A"].
-
+${estimateBlock}
             Example output:
             {
-              "answers": [
+${exampleEstimateLine}              "answers": [
                 {
                   "id": "question-1",
                   "type": "match",
@@ -89,6 +91,20 @@ async function solveAndSubmitQuiz(driver, questions) {
 
             Always adhere strictly to this structure. Respond with valid JSON only.
         `.trim();
+}
+
+/**
+ * Applies answers provided by OpenAI to the current quiz page.
+ *
+ * @returns {Promise<boolean>} true when at least one answer was applied, otherwise false.
+ */
+async function solveAndSubmitQuiz(driver, questions, options = {}) {
+    try {
+        const includeSolveEstimate = Boolean(options.includeSolveEstimate);
+        const userPrompt = generateBatchPrompt(questions, { includeSolveEstimate });
+        console.log(`${fg.cyan}Generated batch prompt:${reset}\n${userPrompt}\n`);
+
+        const systemPrompt = buildSystemPrompt({ includeSolveEstimate });
 
         const response = await openai.chat.completions.create({
             model: 'gpt-4.1',
@@ -102,8 +118,22 @@ async function solveAndSubmitQuiz(driver, questions) {
         const responseContent = response.choices[0]?.message?.content;
         console.log(`${fg.cyan}OpenAI Response:${reset}\n${responseContent}\n`);
 
-        const parsedAnswers = parseBatchResponse(responseContent, questions);
+        const { answers: parsedAnswers, estimatedSolveSeconds } = parseBatchResponse(responseContent, questions, {
+            includeSolveEstimate,
+        });
         console.log(`${fg.green}Parsed answers:${reset}\n`, parsedAnswers);
+
+        if (includeSolveEstimate) {
+            const normalizedSeconds = normalizeEstimatedSeconds(estimatedSolveSeconds);
+            if (normalizedSeconds > 0) {
+                const waitSeconds = Math.min(normalizedSeconds, 300);
+                await log('Delaying automated quiz answer submission to simulate human solving time.', {
+                    estimatedSolveSeconds: normalizedSeconds,
+                    appliedWaitSeconds: waitSeconds,
+                }, driver);
+                await driver.sleep(waitSeconds * 1000);
+            }
+        }
 
         let appliedAnswerCount = 0;
 
@@ -154,8 +184,8 @@ async function solveAndSubmitQuiz(driver, questions) {
 }
 
 
-function generateBatchPrompt(questions) {
-    return questions
+function generateBatchPrompt(questions, options = {}) {
+    const body = questions
         .map((q, i) => {
             const header = `Question ${i + 1} (ID: ${q.id})`;
 
@@ -217,6 +247,12 @@ function generateBatchPrompt(questions) {
             ].join('\n');
         })
         .join('\n\n');
+
+    if (options.includeSolveEstimate) {
+        return `${body}\n\nPlease base your "estimatedSolveSeconds" value on the realistic time a diligent human would need for all questions on this page.`;
+    }
+
+    return body;
 }
 
 function normalizeJsonContent(content) {
@@ -258,21 +294,32 @@ function coerceResponseArray(rawResponse) {
     return [];
 }
 
-function parseBatchResponse(responseContent, questions) {
+function normalizeEstimatedSeconds(value) {
+    if (value == null) {
+        return 0;
+    }
+    const numeric = typeof value === 'string' ? Number.parseFloat(value) : Number(value);
+    if (!Number.isFinite(numeric) || numeric <= 0) {
+        return 0;
+    }
+    return numeric;
+}
+
+function parseBatchResponse(responseContent, questions, options = {}) {
     try {
         const normalizedContent = normalizeJsonContent(responseContent);
         if (!normalizedContent) {
             console.error(`${fg.red}Empty response content received from OpenAI.${reset}`);
-            return questions.map(() => null);
+            return { answers: questions.map(() => null), estimatedSolveSeconds: null };
         }
 
         const parsed = JSON.parse(normalizedContent);
         if (!parsed.answers || !Array.isArray(parsed.answers)) {
             console.error(`${fg.red}Invalid response structure:${reset}`, parsed);
-            return questions.map(() => null);
+            return { answers: questions.map(() => null), estimatedSolveSeconds: null };
         }
 
-        return questions.map((q) => {
+        const answers = questions.map((q) => {
             const answer = parsed.answers.find((a) => a.id === q.id);
             if (!answer) return null;
 
@@ -296,9 +343,14 @@ function parseBatchResponse(responseContent, questions) {
             console.warn(`${fg.yellow}No valid data for question ${q.id}${reset}`);
             return null;
         });
+        const includeEstimate = Boolean(options.includeSolveEstimate);
+        const estimatedSolveSeconds = includeEstimate
+            ? normalizeEstimatedSeconds(parsed.estimatedSolveSeconds)
+            : null;
+        return { answers, estimatedSolveSeconds };
     } catch (err) {
         console.error(`${fg.red}Failed to parse batch response: ${err.message}${reset}`);
-        return questions.map(() => null);
+        return { answers: questions.map(() => null), estimatedSolveSeconds: null };
     }
 }
 
