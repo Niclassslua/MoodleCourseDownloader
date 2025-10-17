@@ -12,6 +12,7 @@ const { createDirectories, sanitizeFilename } = require('./utils/directories');
 const { loginToMoodle, getCourseTitle, enumerateDownloads, listAvailableCourses } = require('./utils/moodle');
 const { processDownloadQueue } = require('./utils/downloader');
 const { loadCourseState, saveCourseState } = require('./utils/stateManager');
+const progressTracker = require('./utils/progressTracker');
 const inquirer = require('inquirer').default;
 
 // QUIZ WATCHER ⬇️
@@ -444,6 +445,7 @@ function openDashboardInBrowser(url) {
 
 async function downloadSingleCourse(driver, courseUrl, outputDir, downloadMode, loggedin) {
     try {
+        progressTracker.reset();
         if ( !loggedin ) {
             await loginToMoodle(driver, MOODLE_LOGIN_URL, MOODLE_USERNAME, MOODLE_PASSWORD, MOODLE_URL);
         }
@@ -451,12 +453,17 @@ async function downloadSingleCourse(driver, courseUrl, outputDir, downloadMode, 
         const coursePath = path.join(outputDir, sanitizeFilename(courseTitle));
         createDirectories([coursePath]);
 
+        progressTracker.setStage('scanning', { message: `Scanne Kurs "${courseTitle}"` });
+
         const { downloadList } = await enumerateDownloads(driver, coursePath, downloadMode, argv.quizSolverMode);
 
         log(`Starte manuellen Download für den Kurs: ${courseTitle}`);
+        progressTracker.setMessage(`Starte Downloads für "${courseTitle}"`);
         await processDownloadQueue(downloadList, argv.maxConcurrentDownloads, driver, tempDownloadDir);
+        progressTracker.setStage('finished', { message: `Kurs "${courseTitle}" abgeschlossen` });
     } catch (err) {
         log(`Ein Fehler ist aufgetreten: ${err}`);
+        progressTracker.failTask(null, err, { message: `Verarbeitung des Kurses fehlgeschlagen: ${err.message}` });
     }
 }
 
@@ -464,10 +471,13 @@ async function syncCourse(driver, courseConfig) {
     const { courseUrl, outputDir, downloadMode } = courseConfig;
 
     try {
+        progressTracker.reset();
         await loginToMoodle(driver, MOODLE_LOGIN_URL, MOODLE_USERNAME, MOODLE_PASSWORD, MOODLE_URL);
         const courseTitle = await getCourseTitle(driver, courseUrl);
         const coursePath = path.join(outputDir, sanitizeFilename(courseTitle));
         createDirectories([coursePath]);
+
+        progressTracker.setStage('scanning', { message: `Scanne Kurs "${courseTitle}"` });
 
         const previousState = loadCourseState(coursePath);
 
@@ -477,13 +487,17 @@ async function syncCourse(driver, courseConfig) {
 
         if (newResources.length > 0) {
             log(`Erkannte ${newResources.length} neue oder aktualisierte Ressourcen im Kurs ${courseTitle}.`);
+            progressTracker.setMessage(`Starte Downloads für "${courseTitle}" (${newResources.length} neu)`);
             await processDownloadQueue(newResources, argv.maxConcurrentDownloads, driver, tempDownloadDir);
             saveCourseState(coursePath, currentState);
+            progressTracker.setStage('finished', { message: `Kurs "${courseTitle}" synchronisiert` });
         } else {
             log(`Keine neuen Ressourcen im Kurs ${courseTitle} erkannt.`);
+            progressTracker.finish({ message: `Keine neuen Ressourcen für "${courseTitle}"` });
         }
     } catch (err) {
         log(`Fehler beim Synchronisieren des Kurses ${courseUrl}: ${err}`);
+        progressTracker.failTask(null, err, { message: `Synchronisation fehlgeschlagen: ${err.message}` });
     }
 }
 
