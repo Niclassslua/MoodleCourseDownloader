@@ -41,7 +41,7 @@ const argv = yargs(hideBin(process.argv))
         },
         quizSolverMode: {
             type: 'string',
-            choices: ['prompt', 'manual', 'openai'],
+            choices: ['prompt', 'manual', 'openai', 'openai-delayed'],
             default: 'prompt',
             describe: 'Steuert, ob Quiz-Versuche manuell, automatisch über OpenAI oder nach Rückfrage gelöst werden'
         },

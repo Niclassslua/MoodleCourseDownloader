@@ -350,8 +350,8 @@ async function handleAttempt(driver, quizUrl, outputDir, quizSolverMode, options
 
     if (mode === 'manual') {
         await runManualSolve(driver);
-    } else if (mode === 'openai') {
-        await runOpenAiSolve(driver);
+    } else if (mode === 'openai' || mode === 'openai-delayed') {
+        await runOpenAiSolve(driver, { mode });
     }
 
     await refreshAttemptSummary(driver, quizUrl, outputDir, quizSolverMode);
@@ -386,7 +386,7 @@ async function ensureAttemptInterfaceReady(driver) {
 async function resolveQuizSolverMode(preferredMode = 'prompt') {
     const normalized = typeof preferredMode === 'string' ? preferredMode.toLowerCase() : 'prompt';
 
-    if (normalized === 'manual' || normalized === 'openai') {
+    if (['manual', 'openai', 'openai-delayed'].includes(normalized)) {
         return normalized;
     }
 
@@ -404,6 +404,10 @@ async function resolveQuizSolverMode(preferredMode = 'prompt') {
                 choices: [
                     { name: 'Ich löse den Versuch manuell im Browser', value: 'manual' },
                     { name: 'OpenAI API soll den Versuch automatisch lösen', value: 'openai' },
+                    {
+                        name: 'OpenAI API soll automatisch lösen und eine Wartezeit simulieren',
+                        value: 'openai-delayed',
+                    },
                 ],
             },
         ]);
@@ -450,9 +454,11 @@ async function getAttemptContext(driver) {
     return { url, attemptId, page };
 }
 
-async function runOpenAiSolve(driver) {
+async function runOpenAiSolve(driver, options = {}) {
     try {
         const seen = new Map(); // key=attemptId|page -> count
+        const mode = typeof options.mode === 'string' ? options.mode : 'openai';
+        const includeSolveEstimate = mode === 'openai-delayed';
 
         while (true) {
             const { url, attemptId, page } = await getAttemptContext(driver);
@@ -491,7 +497,9 @@ async function runOpenAiSolve(driver) {
             if (questions.length) {
                 await log('Solving current page with OpenAI...', { count: questions.length }, driver);
                 // WICHTIG: solveAndSubmitQuiz soll NUR Antworten setzen, NICHT submitten!
-                const applied = await solveAndSubmitQuiz(driver, questions);
+                const applied = await solveAndSubmitQuiz(driver, questions, {
+                    includeSolveEstimate,
+                });
                 if (!applied) {
                     await log('Solver did not apply any answers on this page.', { url }, driver);
                 }
