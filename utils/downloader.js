@@ -6,27 +6,14 @@ const { By } = require('selenium-webdriver');
 const { clearDirectory, sanitizeFilename } = require('./directories');
 const { scrapeForumPosts } = require('./forumScraper');
 const { MOODLE_SELECTORS, RESOURCE_SELECTORS, FOLDER_SELECTORS } = require('./selectors');
+const progressTracker = require('./progressTracker');
+const { formatBytes, describeFileForUi } = require('./uiFiles');
 
 const readline = require('readline');
 
 const MAX_FILE_SIZE_BYTES = 100 * 1024 * 1024; // 100 MB
 const DOWNLOAD_DEBUG_INTERVAL_BYTES = 5 * 1024 * 1024;
 const DEBUG_DOWNLOAD_SIZE = process.env.MCD_DEBUG_DOWNLOAD_SIZE === '1';
-
-const PREVIEWABLE_EXTENSIONS = new Set([
-    'pdf',
-    'txt',
-    'md',
-    'json',
-    'csv',
-    'jpg',
-    'jpeg',
-    'png',
-    'gif',
-    'webp',
-    'bmp',
-    'svg',
-]);
 
 const colors = {
     reset: '\x1b[0m',
@@ -62,24 +49,6 @@ function clearProgress() {
     readline.clearLine(process.stdout, 0);
 }
 
-function formatBytes(bytes) {
-    if (!Number.isFinite(bytes) || bytes < 0) {
-        return '0 B';
-    }
-    if (bytes === 0) {
-        return '0 B';
-    }
-    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-    let value = bytes;
-    let index = 0;
-    while (value >= 1024 && index < units.length - 1) {
-        value /= 1024;
-        index += 1;
-    }
-    const precision = value >= 10 || index === 0 ? 0 : 1;
-    return `${value.toFixed(precision)} ${units[index]}`;
-}
-
 function determineResourceKind(resource) {
     if (resource.isFolder) {
         return 'folder';
@@ -102,78 +71,23 @@ function buildTaskDescriptor(resource, targetPath) {
     };
 }
 
-function describeFileForUi(filePath, sectionDir, resourceName, url, sizeBytes) {
-    const name = path.basename(filePath);
-    const extension = path.extname(name).replace('.', '').toLowerCase();
-    const descriptor = {
-        name,
-        resourceName,
-        path: filePath,
-        relativePath: path.relative(process.cwd(), filePath),
-        sectionPath: sectionDir ? path.relative(process.cwd(), sectionDir) : '',
-        sizeBytes,
-        sizeHuman: formatBytes(sizeBytes),
-        extension,
-        url,
-        previewHint: PREVIEWABLE_EXTENSIONS.has(extension) ? 'preview' : 'download',
-        downloadedAt: new Date().toISOString(),
-    };
-    return descriptor;
-}
-
-function createProgressEmitter(total) {
-    const state = {
-        total,
-        completed: 0,
-        active: 0,
-        startedAt: Date.now(),
-    };
-
-    const emit = (extra = {}) => {
-        const pending = Math.max(state.total - state.completed - state.active, 0);
-        const percent = state.total === 0 ? 100 : Math.min(100, Math.round((state.completed / state.total) * 100));
-        emitUiEvent('progress', {
-            total: state.total,
-            completed: state.completed,
-            active: state.active,
-            pending,
-            percent,
-            startedAt: state.startedAt,
-            ...extra,
-        });
-    };
-
-    emit({ stage: total === 0 ? 'idle' : 'running' });
-
-    return {
-        state,
-        emit,
-        start(task) {
-            state.active += 1;
-            emit({ stage: 'running', current: task });
-        },
-        complete(task) {
-            state.active = Math.max(state.active - 1, 0);
-            state.completed += 1;
-            emit({ stage: state.completed >= state.total ? 'finishing' : 'running', lastCompleted: task });
-        },
-        finish() {
-            state.active = 0;
-            if (state.completed < state.total) {
-                state.completed = state.total;
-            }
-            emit({ stage: 'finished' });
-        },
-    };
-}
-
 async function processDownloadQueue(downloadList, maxConcurrent, driver, tempDownloadDir) {
     const queue = [...downloadList];
     const results = [];
     const activeDownloads = [];
     let completedDownloads = 0;
 
-    const progress = createProgressEmitter(downloadList.length);
+    if (downloadList.length === 0) {
+        progressTracker.finish({ message: 'Keine Downloads erforderlich' });
+        showProgress(0, 0);
+        clearProgress();
+        return;
+    }
+
+    progressTracker.registerTasks(downloadList.length);
+    progressTracker.setStage('downloads', {
+        message: `Starte Downloads (${downloadList.length})`,
+    });
 
     showProgress(completedDownloads, downloadList.length);
 
@@ -200,7 +114,9 @@ async function processDownloadQueue(downloadList, maxConcurrent, driver, tempDow
                 functionName: 'processDownloadQueue',
             });
 
-            progress.start(taskDescriptor);
+            progressTracker.startTask(taskDescriptor, {
+                message: `Lade ${name}`,
+            });
 
             const downloadPromise = isFolder
                 ? processFolder(url, targetPath, name, driver, tempDownloadDir)
@@ -213,7 +129,9 @@ async function processDownloadQueue(downloadList, maxConcurrent, driver, tempDow
             const wrappedPromise = downloadPromise.finally(() => {
                 activeDownloads.splice(activeDownloads.indexOf(wrappedPromise), 1);
                 completedDownloads += 1;
-                progress.complete(taskDescriptor);
+                progressTracker.completeTask(taskDescriptor, {
+                    message: `${name} abgeschlossen`,
+                });
                 showProgress(completedDownloads, downloadList.length);
             });
 
@@ -226,7 +144,7 @@ async function processDownloadQueue(downloadList, maxConcurrent, driver, tempDow
     }
 
     await Promise.all(results);
-    progress.finish();
+    progressTracker.finish({ message: 'Alle Downloads abgeschlossen' });
     clearProgress();
 }
 

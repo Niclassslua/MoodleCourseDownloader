@@ -3,9 +3,11 @@ const { By, until, Key } = require('selenium-webdriver');
 const fs = require('fs');
 const path = require('path');
 const inquirer = require('inquirer').default;
-const { log } = require('./logger');
+const { log, emitUiEvent } = require('./logger');
 const { solveAndSubmitQuiz } = require('./solveQuiz');
 const { clickNextIfPossible } = require('./quizNav');
+const progressTracker = require('./progressTracker');
+const { describeFileForUi } = require('./uiFiles');
 
 const MARK_HEADING_COLOR = '#D32E0FA6';
 const CORRECT_ANSWER_COLOR = '#92d050';
@@ -105,6 +107,30 @@ function formatAnswerList(question) {
         return [];
     }
 
+    const matchRows = answers
+        .map((answer) => {
+            const field = normalizeInline(answer?.field || '');
+            const selectedOption = normalizeInline(answer?.selectedOption || answer?.selected || '');
+            if (!field) {
+                return null;
+            }
+            return { field, selectedOption };
+        })
+        .filter(Boolean);
+
+    if (matchRows.length) {
+        const lines = [
+            '| Beispiel | Adressierungsart |',
+            '|-----------|------------------|',
+        ];
+        for (const row of matchRows) {
+            const example = row.field ? `\`${row.field}\`` : '—';
+            const mapping = row.selectedOption || '—';
+            lines.push(`| ${example} | ${mapping} |`);
+        }
+        return lines;
+    }
+
     const correctSet = collectCorrectAnswerSet(question);
 
     return answers
@@ -190,8 +216,13 @@ function formatQuizMarkdown(quizTitle, questions) {
             lines.push('');
         }
 
-        lines.push('<br>');
-        lines.push('<br>');
+        if (index < questions.length - 1) {
+            lines.push('');
+            lines.push('');
+            lines.push('---');
+            lines.push('');
+            lines.push('');
+        }
     });
 
     return lines.join('\n');
@@ -986,6 +1017,9 @@ async function extractQuizResults(driver, outputDir) {
         const sanitizedQuizTitle = quizTitle.replace(/[^a-zA-Z0-9-_]/g, '_');
 
         log('Extracted quiz title.', { quizTitle, sanitizedQuizTitle });
+        progressTracker.setStage('quiz-export', {
+            message: `Exportiere Quiz "${quizTitle}"`,
+        });
 
         const questions = await driver.wait(until.elementsLocated(By.css('.que')), 10000);
         log('Found questions.', { count: questions.length });
@@ -993,14 +1027,28 @@ async function extractQuizResults(driver, outputDir) {
         const quizData = [];
 
         for (let i = 0; i < questions.length; i++) {
+            const questionTask = { name: `Quizfrage ${i + 1}`, type: 'quiz-question', quizTitle };
+            progressTracker.registerTasks(1);
+            progressTracker.startTask(questionTask, {
+                message: `Extrahiere Quizfrage ${i + 1}`,
+            });
+
             try {
                 const refreshedQuestions = await driver.findElements(By.css('.que'));
                 const question = refreshedQuestions[i];
                 const questionData = await extractQuestionData(question, driver);
                 quizData.push(questionData);
                 log('Added question to quizData.', { questionData });
+
+                const label = questionData?.number ? `Quizfrage ${questionData.number}` : questionTask.name;
+                progressTracker.completeTask({ ...questionTask, name: label }, {
+                    message: `${label} extrahiert`,
+                });
             } catch (err) {
                 log(`Error extracting data for question ${i + 1}.`, { error: err.message });
+                progressTracker.failTask(questionTask, err, {
+                    message: `Quizfrage ${i + 1} konnte nicht extrahiert werden`,
+                });
             }
         }
 
@@ -1008,6 +1056,7 @@ async function extractQuizResults(driver, outputDir) {
 
         if (quizData.length === 0) {
             log('Quiz data is empty. Nothing to save.', {});
+            progressTracker.setMessage(`Keine Daten für Quiz "${quizTitle}" gefunden`);
             return;
         }
 
@@ -1016,29 +1065,63 @@ async function extractQuizResults(driver, outputDir) {
             fs.mkdirSync(outputDir, { recursive: true });
         }
 
-        // Use a robust write path
         const jsonPath = path.join(outputDir, `${sanitizedQuizTitle}.json`);
+        progressTracker.registerTasks(1);
+        const jsonTask = { name: `${sanitizedQuizTitle}.json`, type: 'quiz-export', quizTitle, path: jsonPath };
+        progressTracker.startTask(jsonTask, { message: `Speichere ${jsonTask.name}` });
         try {
             fs.writeFileSync(jsonPath, JSON.stringify({ quizTitle, questions: quizData }, null, 2));
             log('Quiz data saved successfully.', { path: jsonPath });
+            const jsonDescriptor = describeFileForUi(jsonPath, outputDir, quizTitle, null, fs.statSync(jsonPath).size);
+            emitUiEvent('download', { file: jsonDescriptor });
+            progressTracker.completeTask(jsonTask, { message: `${jsonTask.name} gespeichert` });
         } catch (err) {
             log('Failed to save quiz data.', { error: err.message });
+            progressTracker.failTask(jsonTask, err, {
+                message: `Speichern von ${jsonTask.name} fehlgeschlagen`,
+            });
         }
 
+        let markdown = '';
         try {
-            const markdown = formatQuizMarkdown(quizTitle, quizData);
-            if (markdown) {
-                const markdownPath = path.join(outputDir, `${sanitizedQuizTitle}.md`);
-                fs.writeFileSync(markdownPath, `${markdown}\n`, { encoding: 'utf8' });
-                log('Quiz markdown saved successfully.', { path: markdownPath });
-            } else {
-                log('Quiz markdown output was empty. Skipping file write.', { quizTitle });
-            }
+            markdown = formatQuizMarkdown(quizTitle, quizData);
         } catch (err) {
             log('Failed to generate quiz markdown output.', { error: err.message });
+            progressTracker.registerTasks(1);
+            progressTracker.failTask({ name: `${sanitizedQuizTitle}.md`, type: 'quiz-export', quizTitle }, err, {
+                message: `Markdown-Export für ${quizTitle} fehlgeschlagen`,
+            });
+            markdown = '';
         }
+
+        if (markdown) {
+            const markdownPath = path.join(outputDir, `${sanitizedQuizTitle}.md`);
+            progressTracker.registerTasks(1);
+            const markdownTask = { name: `${sanitizedQuizTitle}.md`, type: 'quiz-export', quizTitle, path: markdownPath };
+            progressTracker.startTask(markdownTask, { message: `Speichere ${markdownTask.name}` });
+
+            try {
+                fs.writeFileSync(markdownPath, `${markdown}\n`, { encoding: 'utf8' });
+                log('Quiz markdown saved successfully.', { path: markdownPath });
+                const markdownDescriptor = describeFileForUi(markdownPath, outputDir, quizTitle, null, fs.statSync(markdownPath).size);
+                emitUiEvent('download', { file: markdownDescriptor });
+                progressTracker.completeTask(markdownTask, { message: `${markdownTask.name} gespeichert` });
+            } catch (err) {
+                log('Failed to generate quiz markdown output.', { error: err.message });
+                progressTracker.failTask(markdownTask, err, {
+                    message: `Speichern von ${markdownTask.name} fehlgeschlagen`,
+                });
+            }
+        } else {
+            log('Quiz markdown output was empty. Skipping file write.', { quizTitle });
+        }
+
+        progressTracker.setMessage(`Quiz "${quizTitle}" erfolgreich exportiert`);
     } catch (err) {
         log('Failed to extract quiz results.', { error: err.message });
+        progressTracker.failTask(null, err, {
+            message: `Quiz-Export fehlgeschlagen: ${err.message}`,
+        });
     }
 }
 
